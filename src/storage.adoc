@@ -1,0 +1,408 @@
+= Binary Document Format
+Alex Good <alex@memoryandthought.me>; Andrew Jeffery <andrewjeffery97@gmail.com>
+:descriptions: A specification of the automerge storage format
+:revremark: draft
+:toc:
+
+== Concepts
+
+* Automerge documents consist of a set of changes. A change is a sequence of
+  operations, some metadata including the ID of the actor who created the
+  change and a list of changes the change depends on identified by the SHA256
+  hash of the ancestor change.
+* Operations have a type, some type-dependent data, and an ID
+* Operation IDs are a pair of (actor ID, sequence number)
+* Actor IDs are arbitrary byte sequences
+* Sequence numbers are positive integers
+
+Conceptually then, an automerge document looks like this:
+
+[svgbob,target="conceptual-document"]
+....
+.-------------------------------------------------------------------------.
+! First change                                                            !
+! +--------------+----------+                                             !
+! | Actor ID     | "actor1" |                                             !
+! |~~~~~~~~~~~~~~+~~~~~~~~~~|                                             !
+! | Dependencies | []       |                                             !
+! |~~~~~~~~~~~~~~+~~~~~~~~~~|                                             !
+! |... other metadata       |                                             !
+! +-------------------------+--------------------------------------------+!
+! | Operations                                                           |!
+! +----------------------------------------------------------------------+!
+! | "{id: 1@actor1, type: set, obj: _root, key: thenumber, value: 123}"  |!
+! | "{id: 2@actor1, type: set, obj: _root, key: thestring, value: s}"    |!
+! +----------------------------------------------------------------------+!
+| Second change                                                           ! 
+! +--------------+-------------------------+                              !
+! | Actor ID     | "actor2"                |                              !
+! |~~~~~~~~~~~~~~+~~~~~~~~~~~~~~~~~~~~~~~~~|                              !
+! | Dependencies | "[sha256(first change)]"|                              !
+! |~~~~~~~~~~~~~~+~~~~~~~~~~~~~~~~~~~~~~~~~|                              !
+! |... other metadata                      |                              !
+! +----------------------------------------+-----------------------------+!
+! | Operations                                                           |!
+! +----------------------------------------------------------------------+!
+! | "{id: 1@actor2, type: set, obj: _root, key: thenumber, value: 456}"  |!
+! | "{id: 2@actor2, type: set, obj: _root, key: thestring, value: t}"    |!
+! +----------------------------------------------------------------------+!
+! ...                                                                     !
+! More changes                                                            !
+`~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~'
+....
+
+Directly using this conceptual structure as a storage format is very
+inefficient. We repeat a great deal of metadata for each operation and fail to
+take advantage of regularities in the data.
+
+
+=== Column oriented storage
+
+Because much of the content of an operation is metadata that is very similar
+from one operation to the next it is useful to store data in columns rather than
+rows, doing this allows us to encode the column data in ways that take advantage
+of this similarity. For example imagine the following sequence of operations
+
+|===
+| Object | Action | Value
+
+| 1@actor1 | set | a
+| 1@actor1 | set | b
+| 1@actor1 | set | c
+| 1@actor1 | set | d
+| 1@actor1 | set | d
+| 2@actor1 | set | 1
+| 2@actor1 | set | 2
+| 2@actor1 | set | 3
+|===
+
+If we split the object ID column into two columns: one for the actor ID and one
+for the sequence number and then we run length encode these values then we can
+encode the object ID as two columns like this:
+
+
+|===
+| Column | Value
+
+| Actor ID | (actor1,5)(actor2,3)
+| Sequence number | (1,5)(2,3)
+|===
+
+For long runs this is much more efficient. For different data types there are
+other compression strategies we can use.
+
+=== Actor IDs
+
+Actor IDs are arbitrary byte sequences. Repeating them for each operation is
+very costly so instead we store the actor IDs once at the start of the document
+and then refer to an offset into the array of actor IDs.
+
+=== Change hashes
+
+Changes refer to their dependencies via their hash, but when we already have the
+depenency then we can reconstruct the hash from the data. Therefore wherever
+possible we store the reference to a dependency as an offset into the stored
+dependencies.
+
+== Data types
+
+=== uLEB and LEB
+
+uLEB is an unsigned https://en.wikipedia.org/wiki/LEB128[little endian base 128] value.
+This is a variable length encoding used throughout this document.
+
+LEB is the signed variant.
+
+=== Column Encodings
+
+Data stored in columnar format is made up of two parts, a metadata block and a
+data block. The metadata block has the following format:
+
+[bytefield, target="column-metadata-block"]
+....
+(draw-box "num columns" {:span 8 :borders #{:left :top :bottom}})
+(draw-gap-inline)
+(draw-gap "column metadata")
+(draw-bottom)
+....
+
+|===
+| Field | Description
+
+| Num columns | uLEB of the number of columns in the metadata
+| Column metadata | The bytes containing the  metadata
+|===
+
+The column metadata consists of pairs of the format
+
+[bytefield, target="column-metadata"]
+....
+(draw-box "column ID" {:borders #{:left :top :bottom} :span 7})
+(draw-gap-inline)
+(draw-box "column data length" {:borders #{:left :top :bottom} :span 7})
+(draw-gap-inline)
+....
+
+|===
+| Field | Description
+
+| Column ID | a uLEB encoding of the column ID. This ID will determine the
+encoding of the data. See the documentation for each chunk type for details of
+the columns in that chunk.
+| Column data length | uLEB encoding of the length of the data for this column in the data
+block 
+|===
+
+The data for each column is concatenated and encoded in the data block. The
+column metadata MUST be encoded in the same order as the columns in the data
+block. The total length of the data block must therefore be the sum of the
+individual column lengths.
+
+Each column type is encoded using one of the following encodings:
+
+==== RLE
+
+Run length encoding of raw values. A "run" is encoded as pairs of the form
+`(length,value)`. `length` is a signed LEB encoding of the length of the run.
+the interpretation of `value` depends on `length`.
+
+* If `length` is positive, then `value` is a single instance of the value which
+  occurs `length` times
+* If `length` is 0 then this pair represents a `null` value and `value` is the
+  uLEB encoding of the number of times `null` occurs
+* If `length` is negative then `value` is a literal run and the absolute value
+  of `length` is the number of items in the literal run. That is to say, there
+  is no compression for this kind.
+
+==== Delta
+
+This encoding is only available for columns which contain positive integer
+datatypes. The value of the delta encoder starts as `0`, each item is encoded as
+the difference between the new value and the current value. This sequence of
+deltas is then run length encoded as per the run length encoding section.
+
+For example, the sequence 
+
+|===
+|1|2|3|4|5|10|15
+|=== 
+
+Would be encoded as 
+
+|===
+|1|1|1|1|1|5|5
+|===
+
+This sequence is then run length encoded to given
+
+|===
+| (5,1) | (2,5) 
+|===
+
+==== Boolean
+
+This encoding is only available for columns containing booleans. The column
+contains sequences of uLEB integers which represent alternating sequences of
+`false/true`. The initial value of the column is always `false`
+
+For example, the sequence `[0,2,3]` would be `[true, true, false, false,
+false]`.
+
+=== Encoding missing values
+
+When encoding data in column oriented form it will often happen that a
+particular datum does not have a value for some column. This may be because
+there are multiple data types being stored and the column is only present for
+some of the data types (for example, the delete operation has no value).
+If a row does not have data for a column a null value MUST be written. This
+means that when reading rows applications know to read a value from every column
+for each row.
+
+
+
+== File structure
+
+An automerge file consists of one or more length delimited chunks.
+Implementations must attempt to read chunks until the end of the file. There are
+three types of chunk, one which contains an entire compressed dependency graph of
+changes - often called the "document" format; one which contains a single
+change, and one which contains deflate compressed data which is itself a
+chunk.
+
+=== Chunk Container
+
+[bytefield, target="chunk-container"]
+....
+(defattrs :vertical [:plain {:writing-mode "vertical-rl"}])
+(def row-height 120)
+(draw-column-headers)
+(draw-box "magic" {:span 4})
+(draw-box "checksum" {:span 4})
+(draw-box (text "block type" :vertical))
+(draw-box (text "chunk length" :vertical) {:borders #{:left :top :bottom}})
+(draw-gap-inline)
+(draw-gap "chunk contents")
+(draw-bottom)
+....
+
+|===
+| Field                   | Byte Length     | Description                                          |
+
+| Magic Bytes             | 4               | Some magic bytes, specifically the
+sequence `[0x85, 0x6f, 0x4a, 0x83]`|
+| Checksum                | 4               | First 4 bytes of the SHA256 of the encoded chunk     |
+| Block Type              | 1               | The type of this chunk|
+| Chunk length            | Variable (uLEB) | The length of the following chunk bytes              |
+| Chunk | Variable        | The actual bytes for the chunk                       |
+|===
+
+=== Chunk types
+A chunk type is either:
+
+|===
+| Value | Description|
+
+| `0` | A document chunk, containing an entire change graph |
+| `1` | A change chunk, containing some change metadata and some operations |
+| `2` | A deflate compressed chunk |
+|===
+
+=== Document Chunks
+
+In order to compress well we encode actor IDs at the start of the document and
+operation IDs in the operation just refer to an offset into this list. We also
+don't encode the hashes of all the changes, instead we just store the heads of
+the graph and we reconstruct the changes and hash them as we decompress the
+document.
+
+We encode both change metadata and operations in column oriented fashion. For
+each data type we first encode the column metadata followed by the column data.
+
+[bytefield, target="document-chunk-header"]
+....
+(defattrs :vertical [:plain {:writing-mode "vertical-rl"}])
+(def box-width 110)
+(def boxes-per-row 8)
+(draw-box (text "actors length" ) {:borders #{:left :top :bottom}})
+(draw-gap-inline)
+(draw-box (text "actors" ) {:borders #{:left :top :bottom}})
+(draw-gap-inline)
+(draw-box (text "heads length" ) {:borders #{:left :top :bottom}})
+(draw-gap-inline)
+(draw-box (text "heads" ) {:borders #{:left :top :bottom}})
+(draw-gap-inline)
+(draw-gap "changes metadata")
+(draw-gap "operations metadata")
+(draw-gap "change bytes")
+(draw-gap "operations bytes")
+(draw-bottom)
+....
+
+
+|===
+| Field                                       | Byte Length     | Description                                       
+
+| Actors length                               | Variable (uLEB) | The number of following actors                    
+| Actors                                      | Variable        | The actor IDs in sorted order                     
+| Heads length                                | Variable (uLEB) | The number of following heads hashes              
+| Heads                                       | 32 * heads length    | The head hashes of the hash graph in sorted order 
+| Changes column metadata                     | Variable        | The change columns metadata                    
+| Operations column metadata                  | Variable        | The operations columns metadata
+| Change bytes                                | Variable        | The actual bytes for the changes                  
+| Operations bytes                            | Variable        | The actual bytes for the operations               
+|===
+
+Actor IDs are encoded as an uLEB int length, followed by the corresponding
+number of bytes.
+
+==== Changes
+
+Changes are encoded in causal order (a topological sort of the hash graph).
+
+The change metadata contains the column ids that are present in the encoding.
+Empty columns (those with no data) are not included.
+
+The possible column IDs are as follows:
+
+|===
+| ID  | Name       | Encoding   | Type of Data                                                    
+                                                                                                  
+| 1   | Actor      | uLEB RLE   | Position of the actor in the sorted actors list                 
+| 3   | Seq        | Delta      | Value of the sequence counter for this change                   
+| 19  | Max Op     | Delta      | The maximum sequence number of the operations in this change    
+| 35  | Time       | Delta      | The timestamp this change was produced at                       
+| 53  | Message    | String RLE | The message this change came with                               
+| 64  | Deps num   | uLEB RLE   | The number of dependencies this change has                      
+| 67  | Deps index | Delta      | The indices of the dependencies, as they appear in the document 
+| 86  | Extra len  | uLEB RLE   | Length of the extra bytes                                       
+| 87  | Extra raw  | None       | The raw extra bytes                                             
+|===
+
+
+==== Operations
+
+Operations are extracted from changes and grouped by the object that they manipulate.
+Objects are then sorted by their IDs to make them appear in causal order too.
+
+The operations informatino contains the column ids that are present in the encoding.
+Empty columns (those with no data) are not included.
+
+For each included column the following is encoded:
+
+For each operation we encode its information in the following columns:
+
+|===
+| Column            | Type of Data                                                     
+
+| OpID Actor        | Position of the actor part of the OpID in the sorted actor list  
+| OpID Counter      | The counter part of this OpID                                    
+| Insert            | Whether this operation is an insert or not                       
+| Action            | Action type that this operation performs                         
+| Object ID actor   | The actor part of the object this operation manipulates          
+| Object ID counter | The counter part of the object this operation manipulates        
+| Key actor         | The actor part of this key (if a sequence index)                 
+| Key counter       | The counter part of this key (if a sequence index)               
+| Key string        | The string part of this key (if a map key)                       
+| Value ref counter | The counter part of the OpID this cursor refers to (cursor only) 
+| Value ref actor   | The actor part of the OpID this cursor refers to (cursor only)   
+| Value length      | The length of the encoded raw value in bytes                     
+| Value raw         | The actual value                                                 
+| Successors number | The number of successors in this operation                       
+| Successor actor   | The actor part of the successor                                  
+| Successor counter | The counter part of the successor                                
+|===
+
+==== Order of operations
+
+Operations must appear in a specific order, as follows:
+
+* First sort by objectId, such that any operations for the same object are consecutive in the file.
+  The null objectId (i.e. the root object) is sorted before all non-null objectIds.
+  Non-null objectIds are sorted by Lamport timestamp ordering.
+* Next, if the object is a map, sort the operations within that object lexicographically by key,
+  so that all operations for the same key are consecutive. This sort order should be based on the
+  UTF-8 byte sequence of the key. NOTE: the JavaScript implementation currently does not do this
+  sorting correctly, since it sorts by JavaScript string comparison, which differs from UTF-8
+  lexicographic ordering for characters beyond the basic multilingual plane.
+* If the object is a list or text, sort the operations within that object by the position at which
+  they occur in the sequence, so that all operations that relate to the same list element are
+  consecutive. Tombstones are treated just like any other list element. To determine the list element
+  that an operation relates to, the following rule applies: for insertions (operations where the
+  insert column is true), the opId is the list element ID; for updates or deletes (where insert is
+  false), the key (keyCtr and keyActor columns, known as elemId in the JSON representation) is the
+  list element ID.
+* Among the operations for the same key (for maps) or the same list element (for lists/text), sort
+  the operations by their opId, using Lamport timestamp ordering. For list elements, note that the
+  operation that inserted the operation will always have an opId that is lower than the opId of any
+  operations that updates or deletes that list element, and therefore the insertion operation will
+  always be the first operation for a given list element.
+
+
+=== Change chunks
+
+TODO
+
+=== Compressed chunks
+
+TODO
+

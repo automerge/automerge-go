@@ -1,1 +1,1 @@
-asciidoctor -r asciidoctor-diagram --backend html storage_format.adoc -o storage.html
+asciidoctor -r asciidoctor-diagram --backend html src/storage.adoc -o storage.html
