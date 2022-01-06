@@ -397,6 +397,18 @@ Operations must appear in a specific order, as follows:
   operations that updates or deletes that list element, and therefore the insertion operation will
   always be the first operation for a given list element.
 
+==== Hash verification
+
+TODO: specify how to reconstruct change hashes from the document and verify that the heads match
+
+==== Encoding algorithm
+
+TODO: write down the algorithm for encoding a document based on the above
+
+==== Decoding algorithm
+
+TODO: write down the algorithm for decoding a document based on the above
+
 
 === Change chunks
 
