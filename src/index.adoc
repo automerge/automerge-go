@@ -3,6 +3,7 @@ Alex Good <alex@memoryandthought.me>; Andrew Jeffery <andrewjeffery97@gmail.com>
 :descriptions: A specification of the automerge storage format
 :revremark: draft
 :toc:
+:stylesheet: asciidoctor.css
 
 == Concepts
 
