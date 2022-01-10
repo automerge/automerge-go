@@ -75,6 +75,7 @@ compatbility reasons
 
 | Object ID | Operation ID | The ID of the object this operation changes
 | Key | String or operation ID | The map property or sequence element within the
+object
 | Action | Action | The change this operation is making
 | Value | Optional primitive value | The payload of this operation (if any)
 object,that this operation pertains to
@@ -93,6 +94,7 @@ the resulting object as noted in <<objects-intro,objects>>.
 The `inc` and `set` operations have an associated `value`. For all other
 operations `value` is `null`.
 
+[#primitive-values]
 ==== Primitive Values
 
 |===
@@ -126,7 +128,7 @@ this:
 `---------------------------------------------------'
 ....
 
-We store it like this:
+It is stored like this:
 
 [svgbob, target="column-oriented-intro-columns"]
 ....
@@ -151,7 +153,7 @@ We store it like this:
 i.e. The data for each column is stored contiguously, rather than for each row.
 
 
-== Data types
+== Encoding
 
 === uLEB and LEB
 
@@ -160,18 +162,10 @@ This is a variable length encoding used throughout this document.
 
 LEB is the signed variant.
 
-=== Column Encodings
+=== Column Metadata
 
 Data stored in columnar format is made up of two parts, a metadata block and a
-data block. The metadata block has the following format:
-
-[bytefield, target="column-metadata-block"]
-....
-(draw-box "num columns" {:span 8 :borders #{:left :top :bottom}})
-(draw-gap-inline)
-(draw-gap "column metadata")
-(draw-bottom)
-....
+data block. The metadata block is length delimited:
 
 |===
 | Field | Description
@@ -180,53 +174,168 @@ data block. The metadata block has the following format:
 | Column metadata | The bytes containing the  metadata
 |===
 
-The column metadata consists of pairs of the format
-
-[bytefield, target="column-metadata"]
-....
-(draw-box "column ID" {:borders #{:left :top :bottom} :span 7})
-(draw-gap-inline)
-(draw-box "column data length" {:borders #{:left :top :bottom} :span 7})
-(draw-gap-inline)
-....
+The column metadata consists of pairs of the form
 
 |===
 | Field | Description
 
-| Column ID | a uLEB encoding of the column ID. This ID will determine the
-encoding of the data. See the documentation for each chunk type for details of
-the columns in that chunk.
+| <<column-specifications, Column Specification>> | a 32 bit integer
 | Column data length | uLEB encoding of the length of the data for this column in the data
 block 
 |===
 
-The data for each column is concatenated and encoded in the data block. The
-column metadata MUST be encoded in the same order as the columns in the data
-block. The total length of the data block must therefore be the sum of the
-individual column lengths.
+The data for each column is in the data block in the same position as the
+respective column occurs in the metadata block. The column specification encodes
+how to interpret the data in the data block.
 
-Each column type is encoded using one of the following encodings:
+==== Order of columns
 
+Columns MUST be encoded in ascending <<normalized-column-specifier, normalized
+column specification>> order, implementations MUST abort parsing with an error
+when reading a document if the columns are not in this order.
+
+The column data MUST be encoded in the data block in the same order as the
+column metadata.
+
+[#column-specifications]
+==== Column Specifications
+
+Column specifications are a 32 bit field encoded like this (column numbering in
+bigendian order):
+
+[bytefield,target="column-id-layout"]
+....
+(def boxes-per-row 32)
+(def row-height 100)
+(defattrs :vertical [:plain {:writing-mode "vertical-rl"}])
+(draw-column-headers {:labels (map str (reverse (take 32 (iterate inc 1))))})
+(draw-box "ID" {:span 28})
+(draw-box (text "DEFLATE" :vertical) {:span 1})
+(draw-box "type" {:span 3})
+....
+
+* The least significant three bits encode the column type
+* The 4th least significant bit is `1` if the column is DEFLATE compressed and
+  `0` otherwise
+* The remaining bits are the unique column ID
+
+Implementations MUST abort with an error if duplicate column specifiers are
+detected when parsing.
+
+If the deflate bit is set then the column data must first be decompressed using
+DEFLATE before proceeding with decoding the values.
+
+The column type specifies how the data in the column is encoded. The possible
+types are:
+
+[#column-types-table]
+|===
+| Value | Description | Encoding
+
+| 0 | <<group-columns,Group>> | RLE compressed uLEB
+| 1 | Actor ID | RLE compressed integer
+| 2 | Arbitrary integers | RLE compressed LEB
+| 3 | Arbitrary integers | Delta compressed uLEB
+| 4 | Arbitrary booleans | Boolean
+| 5 | Arbitrary strings | RLE compressed string
+| 6 | Raw value metadata | The length and type of items in an accompanying raw value column
+| 7 | Raw values | Raw values
+|===
+
+
+[#normalized-column-specifier]
+===== Normalized column specifiers
+
+Because columns can be optionally compressed there are two possible encodings of
+the same column specifier - one with and one without the compression bit set.
+Column specifiers are normalized by setting their 4th least significant bit to
+0.
+
+An example algorithm for normalizing columns specifiers is the following
+(assuming integers are represented in bigendian order, and `&&` performs bitwise
+AND).
+
+[listing]
+....
+normalizedIds = []
+for id in columnIds
+    normalizedId = id && 0x8
+    normalizedIds.push(normalizedId)
+....
+
+
+
+[#column-encodings]
+=== Column Encodings
+
+[#group-columns]
+==== Group
+
+A group column specifies a composite, collection-value column. Column specifiers
+following the group column specifier in the metadata block which have the same
+ID as the group column specifier should be read together. The group column
+data consists of <<rle-columns, run length encoded integers>>, the value for
+each row determines how many values should be read from each of the grouped
+columns. Implementations MUST abort with an error if they cannot read this
+number of values from each of the grouped columns.
+
+An example of this is the `pred` column in the change encoding. The portion of
+the metadata block containing the pred column specifier is encoded thusly
+
+[svgbob, target="group-example"]
+....
+.-----+------------+-----+------------+-----+-----------.
+| 112 | <data len> | 113 | <data len> | 115 | <data len>|
+| ...                                                   |
+`-------------------------------------------------------'
+....
+
+* `112` is `(7 << 4)`, thus the type is `0` which means this is a group column.
+  With ID `7`
+* `113` is `(7 << 4) | 1` so the type is `1` which is "actor" and the column
+  id is `7`
+* `115` is `(7 << 4) | 3` so the type is `3` which is "delta int" and the column
+  ID is `7`
+
+To read values from this column then we first decode the value of the group
+column, then we decode this number of values from each of the grouped columns
+and the value for the row becomes the list of lists of resulting values. In this
+case if we read `n` from the group column then the row value would be `[[actor1,
+counter1], [actor2, counter2], ..., [actor_n, counter_n]]`
+
+Note that it is not possible for two columns in a group to have the same type as
+it would not be possible to have a deterministic ordering for the column
+specifiers. Implementations MUST abort with an error if they encounter two
+column specifiers with the same type and column ID.
+
+Implementations MUST abort with an error if they encounter multiple group
+column specifiers with the same ID.
+
+
+[#rle-columns]
 ==== RLE
 
-Run length encoding of raw values. A "run" is encoded as pairs of the form
-`(length,value)`. `length` is a signed LEB encoding of the length of the run.
-the interpretation of `value` depends on `length`.
+Run length encoding of values. The exact type of value depends is specified by
+the column type in <<column-types-table, column types>>. A "run" is encoded as
+pairs of the form `(length,value)`. `length` is a signed LEB encoding of the
+length of the run. the interpretation of `value` depends on `length`.
 
 * If `length` is positive, then `value` is a single instance of the value which
-  occurs `length` times
+  occurs `length` times.
 * If `length` is 0 then this pair represents a `null` value and `value` is the
   uLEB encoding of the number of times `null` occurs
 * If `length` is negative then `value` is a literal run and the absolute value
   of `length` is the number of items in the literal run. That is to say, there
-  is no compression for this kind.
+  is no compression.
+
 
 ==== Delta
 
-This encoding is only available for columns which contain positive integer
-datatypes. The value of the delta encoder starts as `0`, each item is encoded as
-the difference between the new value and the current value. This sequence of
-deltas is then run length encoded as per the run length encoding section.
+This encoding is only applicable for columns which contain positive integer
+datatypes. The encoded data is a sequence of uLEB integers. The value starts as
+`0` and each new item is encoded as the difference between the new value and the
+current value. This sequence of deltas is then run length encoded as per the run
+length encoding section.
 
 For example, the sequence 
 
@@ -254,17 +363,6 @@ contains sequences of uLEB integers which represent alternating sequences of
 
 For example, the sequence `[0,2,3]` would be `[true, true, false, false,
 false]`.
-
-=== Encoding missing values
-
-When encoding data in column oriented form it will often happen that a
-particular datum does not have a value for some column. This may be because
-there are multiple data types being stored and the column is only present for
-some of the data types (for example, the delete operation has no value).
-If a row does not have data for a column a null value MUST be written. This
-means that when reading rows applications know to read a value from every column
-for each row.
-
 
 
 == File structure
