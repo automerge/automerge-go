@@ -5,105 +5,151 @@ Alex Good <alex@memoryandthought.me>; Andrew Jeffery <andrewjeffery97@gmail.com>
 :toc:
 :stylesheet: asciidoctor.css
 
+== Introduction
+
+Automerge documents are a directed acyclic graph (DAG) of changes. Each change
+consists of an actor ID, a list of parent changes, and a list of operations.
+We refer to these conceptual structures as the "reference document", "reference
+change", and "reference operation". The storage format achieves good compression
+by using a specific representation of the reference data structures, this
+specification describes how to transform between the compressed and reference
+representations.
+
 == Concepts
-
-* Automerge documents consist of a set of changes. A change is a sequence of
-  operations, some metadata including the ID of the actor who created the
-  change and a list of changes the change depends on identified by the SHA256
-  hash of the ancestor change.
-* Operations have a type, some type-dependent data, and an ID
-* Operation IDs are a pair of (actor ID, sequence number)
-* Actor IDs are arbitrary byte sequences
-* Sequence numbers are positive integers
-
-Conceptually then, an automerge document looks like this:
-
-[svgbob,target="conceptual-document"]
-....
-.-------------------------------------------------------------------------.
-! First change                                                            !
-! +--------------+----------+                                             !
-! | Actor ID     | "actor1" |                                             !
-! |~~~~~~~~~~~~~~+~~~~~~~~~~|                                             !
-! | Dependencies | []       |                                             !
-! |~~~~~~~~~~~~~~+~~~~~~~~~~|                                             !
-! |... other metadata       |                                             !
-! +-------------------------+--------------------------------------------+!
-! | Operations                                                           |!
-! +----------------------------------------------------------------------+!
-! | "{id: 1@actor1, type: set, obj: _root, key: thenumber, value: 123}"  |!
-! | "{id: 2@actor1, type: set, obj: _root, key: thestring, value: s}"    |!
-! +----------------------------------------------------------------------+!
-| Second change                                                           ! 
-! +--------------+-------------------------+                              !
-! | Actor ID     | "actor2"                |                              !
-! |~~~~~~~~~~~~~~+~~~~~~~~~~~~~~~~~~~~~~~~~|                              !
-! | Dependencies | "[sha256(first change)]"|                              !
-! |~~~~~~~~~~~~~~+~~~~~~~~~~~~~~~~~~~~~~~~~|                              !
-! |... other metadata                      |                              !
-! +----------------------------------------+-----------------------------+!
-! | Operations                                                           |!
-! +----------------------------------------------------------------------+!
-! | "{id: 1@actor2, type: set, obj: _root, key: thenumber, value: 456}"  |!
-! | "{id: 2@actor2, type: set, obj: _root, key: thestring, value: t}"    |!
-! +----------------------------------------------------------------------+!
-! ...                                                                     !
-! More changes                                                            !
-`~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~'
-....
-
-Directly using this conceptual structure as a storage format is very
-inefficient. We repeat a great deal of metadata for each operation and fail to
-take advantage of regularities in the data.
-
-
-=== Column oriented storage
-
-Because much of the content of an operation is metadata that is very similar
-from one operation to the next it is useful to store data in columns rather than
-rows, doing this allows us to encode the column data in ways that take advantage
-of this similarity. For example imagine the following sequence of operations
-
-|===
-| Object | Action | Value
-
-| 1@actor1 | set | a
-| 1@actor1 | set | b
-| 1@actor1 | set | c
-| 1@actor1 | set | d
-| 1@actor1 | set | d
-| 2@actor1 | set | 1
-| 2@actor1 | set | 2
-| 2@actor1 | set | 3
-|===
-
-If we split the object ID column into two columns: one for the actor ID and one
-for the sequence number and then we run length encode these values then we can
-encode the object ID as two columns like this:
-
-
-|===
-| Column | Value
-
-| Actor ID | (actor1,5)(actor2,3)
-| Sequence number | (1,5)(2,3)
-|===
-
-For long runs this is much more efficient. For different data types there are
-other compression strategies we can use.
 
 === Actor IDs
 
-Actor IDs are arbitrary byte sequences. Repeating them for each operation is
-very costly so instead we store the actor IDs once at the start of the document
-and then refer to an offset into the array of actor IDs.
+Actors represent sequential threads of operation in automerge. An actor ID is an
+arbitrary sequence of bytes.
 
-=== Change hashes
+=== Operations
 
-Changes refer to their dependencies via their hash, but when we already have the
-depenency then we can reconstruct the hash from the data. Therefore wherever
-possible we store the reference to a dependency as an offset into the stored
-dependencies.
+Operations are individual mutations of a document which are bundled together in
+changes. Some operations carry a payload.
+
+=== Operation IDs
+
+Every operation is identified by the pair (`actor ID`, `counter`). The actor ID
+is the ID of the actor who created the operation, counter is an integer which
+always increases for each actor.
+
+[#objects-intro]
+=== Objects and object IDs
+
+Some data types in an automerge document are composite objects, either maps from
+strings to values - the `map` and `table` objects - or sequences - `list` and
+`text`. Operations on these objects reference objects by the operation ID of the
+operation which creates the object. The null object ID indicates that the
+operation target is the "root" object, which is a map.
+
+=== Dependency Graph
+
+Changes in automerge form a DAG expressed by a list of `SHA256` hashes of direct
+ancestors stored in the `dependencies` field of the <<change-reference,
+change>>.
+
+
+=== Reference Data Structures
+
+[#change-reference]
+==== Change
+
+|===
+| Field | Type | Description
+
+| Actor ID | Arbitrary byte sequence | Unique actor ID
+| Seq | 64 bit Integer | Sequence number, always increasing per-actor
+| Start Op | 64 bit Integer | Sequence number of first operation in the change
+| Message | Optional byte sequence | Human readable message describing this
+change
+| Dependencies | List of 32 byte arrays | List of hashes of parent changes
+| Operations | List of operations | The operations in this change
+| Extra bytes | Arbitrary byte sequence | Extra data reserved for forward
+compatbility reasons
+|===
+
+==== Operations
+
+|===
+| Field | Type | Description
+
+| Object ID | Operation ID | The ID of the object this operation changes
+| Key | String or operation ID | The map property or sequence element within the
+| Action | Action | The change this operation is making
+| Value | Optional primitive value | The payload of this operation (if any)
+object,that this operation pertains to
+| Pred | List of operation IDs | Previous operations this operation supercedes
+|===
+
+The action of an operation can be one of a few different types:
+
+`makeMap`, `makeTable`, `makeList`, `makeText` :: Operations which denote
+creation of a new composite object. The ID of the operation becomes the ID of
+the resulting object as noted in <<objects-intro,objects>>.
+`del` :: Marks the key within the object as deleted
+`inc` :: Increments the counter stored at the given object and key
+`set` :: Set the value at the given object and key
+
+The `inc` and `set` operations have an associated `value`. For all other
+operations `value` is `null`.
+
+==== Primitive Values
+
+|===
+| Type | Description
+
+| bytes | Arbitrary sequnce of bytes 
+| string | A valid UTF-8 string
+| int | 64 bit integer
+| float | 64 bit floating point number
+| counter | 64 bit positive integer
+| timestamp | 64 bit positive integer
+| boolean | boolean
+| null | the null value
+|===
+
+Technically the `counter` and `timestamp` types are not primitive but they are
+still treated separately in the data model.
+
+=== Column oriented storage
+
+The storage format achieves good compression by storing operations and changes
+in a column oriented manner. That is to say that rather than storing data like
+this:
+
+[svgbob, target="column-oriented-intro-rows"]
+....
+.---------------------------------------------------.
+|actor ID | object ID | key | action | value | pred | <- 1st operation
+|actor ID | object ID | key | action | value | pred | <- 2nd operation
+| ...                                               |
+`---------------------------------------------------'
+....
+
+We store it like this:
+
+[svgbob, target="column-oriented-intro-columns"]
+....
+.---------------+---------------+-----.
+| op1 actor ID  | op2 actor ID  | ... |
+|---------------+---------------+-----|
+| op1 object ID | op2 object ID | ... |
+|---------------+---------------+-----|
+| op1 key ID    | op2 key ID    | ... |
+|---------------+---------------+-----|
+| op1 action ID | op2 action ID | ... |
+|---------------+---------------+-----|
+| op1 value ID  | op2 value ID  | ... |
+|---------------+---------------+-----|
+| op1 pred ID   | op2 pred ID   | ... |
+`---------------+---------------+-----'
+        ^               ^
+        |               |
+ 1st operation    2nd operation
+....
+
+i.e. The data for each column is stored contiguously, rather than for each row.
+
 
 == Data types
 
