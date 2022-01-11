@@ -3,6 +3,7 @@ Alex Good <alex@memoryandthought.me>; Andrew Jeffery <andrewjeffery97@gmail.com>
 :descriptions: A specification of the automerge storage format
 :revremark: draft
 :toc:
+:toclevels: 4
 :stylesheet: asciidoctor.css
 
 == Introduction
@@ -13,7 +14,16 @@ We refer to these conceptual structures as the "reference document", "reference
 change", and "reference operation". The storage format achieves good compression
 by using a specific representation of the reference data structures, this
 specification describes how to transform between the compressed and reference
-representations.
+data structures.
+
+== Terminology and Conventions
+
+The key words "`MUST`", "`MUST NOT`", "`REQUIRED`", "`SHALL`", "`SHALL NOT`",
+"`SHOULD`", "`SHOULD NOT`", "`RECOMMENDED`", "`NOT RECOMMENDED`", "`MAY`", and
+"`OPTIONAL`" in this document are to be interpreted as described in <<RFC2119>>
+and <<RFC8174>> when, and only when, they appear in all capitals, as
+shown here.
+
 
 == Concepts
 
@@ -51,6 +61,12 @@ change>>.
 
 === Reference Data Structures
 
+Note that for forwards compatibility the reference data structures contain
+fields which we don't know the name or purpose of. This data may be produced by
+future versions of automerge and MUST be retained when translating to and from
+the reference data structures.
+
+
 [#change-reference]
 ==== Change
 
@@ -59,13 +75,15 @@ change>>.
 
 | Actor ID | Arbitrary byte sequence | Unique actor ID
 | Seq | 64 bit Integer | Sequence number, always increasing per-actor
-| Start Op | 64 bit Integer | Sequence number of first operation in the change
 | Message | Optional byte sequence | Human readable message describing this
 change
 | Dependencies | List of 32 byte arrays | List of hashes of parent changes
 | Operations | List of operations | The operations in this change
 | Extra bytes | Arbitrary byte sequence | Extra data reserved for forward
 compatbility reasons
+| Unknown field 1 | an <<unknown-field-values, unknown field>>| forward
+compatible data
+3+| ... other unknown fields ... |
 |===
 
 ==== Operations
@@ -77,9 +95,12 @@ compatbility reasons
 | Key | String or operation ID | The map property or sequence element within the
 object
 | Action | Action | The change this operation is making
-| Value | Optional primitive value | The payload of this operation (if any)
+| Value | Optional <<primitive-values, primitive value>> | The payload of this operation (if any)
 object,that this operation pertains to
 | Pred | List of operation IDs | Previous operations this operation supercedes
+| Unknown field 1 | an <<unknown-field-values, unknown field>>| forward
+compatible data
+3+| ... other unknown fields ... |
 |===
 
 The action of an operation can be one of a few different types:
@@ -91,11 +112,13 @@ the resulting object as noted in <<objects-intro,objects>>.
 `inc` :: Increments the counter stored at the given object and key
 `set` :: Set the value at the given object and key
 
-The `inc` and `set` operations have an associated `value`. For all other
-operations `value` is `null`.
+The `inc` and `set` operations have an associated `value` field which is a
+<<primitive-values, primitive value>>. For all other operations `value` is `null`.
 
 [#primitive-values]
 ==== Primitive Values
+
+Primitive values can be any of the following
 
 |===
 | Type | Description
@@ -112,6 +135,12 @@ operations `value` is `null`.
 
 Technically the `counter` and `timestamp` types are not primitive but they are
 still treated separately in the data model.
+
+[#unknown-field-values]
+==== Unknown field values
+
+Unknown fields may contain either a <<primitive-values, primitive value>> or a
+list of lists of primitive values.
 
 === Column oriented storage
 
@@ -215,9 +244,9 @@ bigendian order):
 ....
 
 * The least significant three bits encode the column type
-* The 4th least significant bit is `1` if the column is DEFLATE compressed and
+* The 4th least significant bit is `1` if the column is <<DEFLATE>> compressed and
   `0` otherwise
-* The remaining bits are the unique column ID
+* The remaining bits are the column ID
 
 Implementations MUST abort with an error if duplicate column specifiers are
 detected when parsing.
@@ -238,10 +267,9 @@ types are:
 | 3 | Arbitrary integers | Delta compressed uLEB
 | 4 | Arbitrary booleans | Boolean
 | 5 | Arbitrary strings | RLE compressed string
-| 6 | Raw value metadata | The length and type of items in an accompanying raw value column
-| 7 | Raw values | Raw values
+| 6 | <<raw-value-columns, Raw value metadata>> | RLE compressed LEB
+| 7 | <<raw-value-columns, Raw values>> | Raw values
 |===
-
 
 [#normalized-column-specifier]
 ===== Normalized column specifiers
@@ -250,20 +278,6 @@ Because columns can be optionally compressed there are two possible encodings of
 the same column specifier - one with and one without the compression bit set.
 Column specifiers are normalized by setting their 4th least significant bit to
 0.
-
-An example algorithm for normalizing columns specifiers is the following
-(assuming integers are represented in bigendian order, and `&&` performs bitwise
-AND).
-
-[listing]
-....
-normalizedIds = []
-for id in columnIds
-    normalizedId = id && 0x8
-    normalizedIds.push(normalizedId)
-....
-
-
 
 [#column-encodings]
 === Column Encodings
@@ -310,6 +324,10 @@ column specifiers with the same type and column ID.
 
 Implementations MUST abort with an error if they encounter multiple group
 column specifiers with the same ID.
+
+Group column specifiers must be followed by at least one column specifier with
+the same column ID. Implementations MUST abort if a group column specifier
+without a following column specifier of the same ID is encountered.
 
 
 [#rle-columns]
@@ -365,6 +383,73 @@ For example, the sequence `[0,2,3]` would be `[true, true, false, false,
 false]`.
 
 
+[#raw-value-columns]
+==== Raw values
+
+Raw value fields are encoded as two column specifiers. The first has type `6`,
+indicating that it is raw value metadata and the second has type `7`, indicating
+that it contains raw values. The two columns have the same ID. 
+
+Implementations MUST abort if they encounter a metadata column which is not
+followed by raw value column with the same ID or a raw value column not
+preceeded by a metadata column with the same ID. Implemtations MUST also abort
+if they encounter more than one metadata column with the same column ID, or more
+than one raw value column with the same ID.
+
+These two colums are intepreted together. The metadata column contains RLE
+compressed LEB integers. These integers are laid out like so
+
+[bytefield,target="raw-value-metadata-layout"]
+....
+(defattrs :vertical [:plain {:writing-mode "vertical-rl"}])
+(draw-column-headers {:labels (reverse column-labels)})
+(draw-box "length" {:span 13 :borders #{:left :top :bottom}})
+(draw-gap-inline)
+(draw-box "type" {:span 2})
+....
+
+* The lower four bits encode the type of the value
+* The higher bits encode the length of the value
+
+The type code may be 
+
+|===
+| Value | Type 
+
+| 0 | Null
+| 1 | False
+| 2 | True
+| 3 | uLEB 
+| 4 | LEB
+| 5 | IEEE754 float
+| 6 | UTF8 bytes
+| 7 | Bytes
+| 8 | Counter
+| 9 | Timestamp
+|===
+
+If the type tag is none of these values it may be a value produced by a future
+version of automerge. In this case implementations MUST read and store the type
+code and raw bytes when reading and write them back in same position when
+writing.
+
+The interpretation of the value column depends on the type code. 
+
+* For `0,1,2` (`null`, `false`, `true`) no value is stored in the raw value
+  column
+* For all other column types the length bits specify the number of bits which
+  should be read from the raw value column (which is not compressed in any
+  manner) and interpreted as follows:
+** `uLEB` and `LEB` as per the LEB128 spec
+** IEEE754 floats - as per the spec
+** UTF8 bytes should be interpreted as a string. Implementations SHOULD validate
+   that the bytes are valid UTF8 and replace any offending characters with
+   U+FFFD REPLACEMENT CHARACTER
+** Bytes - the data is an arbitrary byte sequence
+** Counter, the underlying data is a uLEB encoded integer.
+** Timestamp, the underlying data is a uLEB encoded integer.
+
+
 == File structure
 
 An automerge file consists of one or more length delimited chunks.
@@ -374,6 +459,7 @@ changes - often called the "document" format; one which contains a single
 change, and one which contains deflate compressed data which is itself a
 chunk.
 
+[#chunk-containers]
 === Chunk Container
 
 [bytefield, target="chunk-container"]
@@ -561,5 +647,15 @@ TODO
 
 === Compressed chunks
 
-TODO
+Compressed chunks must be decompressed using <<DEFLATE>>. The decompressed chunk
+is a chunk container which should be interpreted as per <<chunk-containers,
+chunk containers>>. Implementations SHOULD raise an error if the contents of a
+compressed chunk is another compressed chunk.
+
+[bibliography]
+== References
+
+* [[[RFC2119]]]: https://datatracker.ietf.org/doc/html/rfc2119
+* [[[RFC8174]]]: https://datatracker.ietf.org/doc/html/rfc8174
+* [[DEFLATE]]: https://datatracker.ietf.org/doc/html/rfc1951
 
