@@ -32,7 +32,7 @@ shown here.
 Actors represent sequential threads of operation in automerge. An actor ID is an
 arbitrary sequence of bytes.
 
-=== Operations
+=== Operations 
 
 Operations are individual mutations of a document which are bundled together in
 changes. Some operations carry a payload.
@@ -61,11 +61,10 @@ change>>.
 
 === Reference Data Structures
 
-Note that for forwards compatibility the reference data structures contain
-fields which we don't know the name or purpose of. This data may be produced by
-future versions of automerge and MUST be retained when translating to and from
-the reference data structures.
-
+The reference data structures are an abstract representation of an automerge
+document. Implementations will generally choose application specific
+representations of the data types but the encoding is defined in terms of
+isomorphisms with the reference data types.
 
 [#change-reference]
 ==== Change
@@ -81,12 +80,14 @@ change
 | Operations | List of operations | The operations in this change
 | Extra bytes | Arbitrary byte sequence | Extra data reserved for forward
 compatbility reasons
-| Unknown field 1 | an <<unknown-field-values, unknown field>>| forward
-compatible data
-3+| ... other unknown fields ... |
 |===
 
 ==== Operations
+
+Note that for forwards compatibility the reference operations contain fields
+which we don't know the name or purpose of. This data may be produced by future
+versions of automerge and MUST be retained when mapping to and from the
+reference data structures.
 
 |===
 | Field | Type | Description
@@ -191,6 +192,29 @@ This is a variable length encoding used throughout this document.
 
 LEB is the signed variant.
 
+[#action-array]
+=== Action array
+
+The actions in the reference data structure are encoded as a 0-based index into
+the following array:
+
+|===
+| Action
+
+| `makeMap`
+| `set`
+| `makeList`
+| `del`
+| `makeText`
+| `inc`
+| `makeTable`
+| `link`
+|===
+
+WARNING: Link is unusued I think?
+
+
+[#column-metadata-block]
 === Column Metadata
 
 Data stored in columnar format is made up of two parts, a metadata block and a
@@ -449,6 +473,8 @@ The interpretation of the value column depends on the type code.
 ** Counter, the underlying data is a uLEB encoded integer.
 ** Timestamp, the underlying data is a uLEB encoded integer.
 
+WARNING: Replacing invalid utf-8 seems like a bad bad move. Should check this
+
 
 == File structure
 
@@ -487,17 +513,20 @@ sequence `[0x85, 0x6f, 0x4a, 0x83]`|
 | Chunk | Variable        | The actual bytes for the chunk                       |
 |===
 
+Implementations MUST abort if the checksum does not match.
+
 === Chunk types
 A chunk type is either:
 
 |===
 | Value | Description|
 
-| `0` | A document chunk, containing an entire change graph |
-| `1` | A change chunk, containing some change metadata and some operations |
-| `2` | A deflate compressed chunk |
+| `0` | A <<document-chunks, document chunk>>, containing an entire change graph |
+| `1` | A <<change-chunks, change chunk>>, containing some change metadata and some operations |
+| `2` | A deflate <<compressed-chunks, compressed chunk>> |
 |===
 
+[#document-chunks]
 === Document Chunks
 
 In order to compress well we encode actor IDs at the start of the document and
@@ -641,10 +670,181 @@ TODO: write down the algorithm for encoding a document based on the above
 TODO: write down the algorithm for decoding a document based on the above
 
 
+[#change-chunks]
 === Change chunks
 
-TODO
+The fields in a change chunk, in order, are:
 
+|===
+| Field | Type | Description
+
+| Dependency count | uLEB | The number of hashes in the dependencies fields
+| Dependencies | 32 * dependency count long byte array | The dependency hashes
+| Actor length | uLEB | The length of the actor IDs
+| Actor | byte array | The actor IDs
+| Sequence number | uLEB | The sequence number
+| Start op | uLEB | The counter of the first op in this change 
+| Time | uLEB | The time this change was created in milliseconds since the unix
+epoch
+| Message length | uLEB | The length of the message
+| Message | UTF-8 | The message associated with this change
+| Other actors length | uLEB | The number of other actor IDs in this change
+| Other actors | byte array | The other actor IDs
+| ops column metadata | <<column-metadata-block, Ops column metadata>> | The
+metadata for the column oriented operation encoding 
+| Ops column data | ops column data | The column data for the operations
+| Extra bytes len | uLEB | The length of any additional, unknown data in this
+change
+| Extra bytes | Byte array | The additional unknown data
+|===
+
+Each actor ID in the other actors array is a length prefixed actor ID. I.e. it
+is
+
+[svgbob, target="length-prefixed-actor"]
+....
+.--------------+-------.
+| Length: uLEB | Bytes |
+`--------------+-------'
+....
+
+The actor IDs in the other actors array are lexicographically ordered.
+Implementations MUST abort when parsing a change which does not present the
+actors in this order.
+
+[#change-operation-columns]
+==== Change operation columns
+
+The column specifications in the operation metadata must include the following
+(note that the column types are redundant as they are included in the specifier
+but we elaborate them for clarity):
+
+
+|===
+| Specification | Type | Description
+
+| 1   | Actor | The actor of the ops object ID
+| 2   | RLE compressed uLEB | The counter of the ops object ID
+| 17  | Actor | The (optional) actor of the ops key 
+| 19  | Delta Compressed uLEB | The (optional) counter of the ops key 
+| 21  | RLE Compressed UTF-8 | The (optional) string of the ops key
+| 33  | Actor | The actor of the ops op ID
+| 35  | Delta compressed uLEB | The counter of the ops op ID
+| 52  | Boolean | Whether or not this is an insert operation
+| 66  | RLE compressed uLEB | The <<action-array, action index>> for the op
+| 86  | Value length | The value metadata for the op
+| 87  | Value raw | The raw value for the op
+| 112 | Group | The <<group-columns, group column>> for the
+predecessors of this op
+| 113 | Actor | The actor component of the predecessors
+|115 | RLE Compressed uLEB | The counter component of the predecessors
+|===
+
+WARNING: The javascript implementation includes a `child` actor ID here. It
+doesn't seem to be needed though, is it obsolete?
+
+Reading implementations MUST abort if any of these column specifiers are not
+present.
+
+There may be additional columns preset, implementations MUST read these columns
+when translating to the reference data structure.
+
+===== Compressed columns
+
+Compressed columns are not permitted in change chunks. Implementations MUST
+abort if they encounter a column specifier with the defalte bit set.
+
+[#change-actor-lookup]
+==== Actor ID lookup
+
+All actor columns resolve to integers. These integers are offsets into the
+concatenation `[change actor ID] + other actor IDs` from the change metadata.
+Implementations MUST abort if an actor index is read which is not present in
+this concatenation.
+
+==== Mapping to the reference data structure
+
+After reading the <<change-operation-columns,operation-columns>> each row has
+the following format:
+
+|===
+| Field | Type
+
+| Obj actor | Int
+| Obj counter | Int
+| Key actor | Int
+| Key counter | Int
+| Key string | String
+| Op Actor | Int
+| Op counter | Int
+| Insert | Boolean
+| Action | Int
+| Value | <<primitive-values, primitive value>>
+| Predecessors | List of [actor, counter] pairs
+2+| Unknown columns ... 
+|===
+
+Note that all of these fields could be null in the encoded document.
+Implementations MUST abort if upon reading they find that any of the following
+are null:
+
+* Obj actor
+* Obj counter
+* Op actor
+* Op counter
+* Action
+
+The action of the operation should be determined with reference to
+<<action-array, the action array>>. Implementations MUST abort if the action
+index is not a valid action.
+
+We lookup actors using the notation `lookup_actor(actor Index)` which refers to
+the process specified in <<change-actor-lookup, actor ID lookup>>.
+
+We determine the key that the operation refers to thusly:
+
+* If the key string is not null then this is the key of the operation
+* Otherwise we use the pair (lookup_actor(key actor), key counter) as the key of the operation
+* If key string is null and any of key actor or key counter are null
+  implementations MUST abort
+
+We map these fields to the reference data structure as follows:
+
+|===
+| Reference operation field | Change column field mapping
+
+| Object ID | (lookup_actor(obj actor), obj counter)
+| Key | The key determined above
+| Action | The action from the <<action-array>> corresponding to the action
+index
+| Value | The value from the change operation (note this may be null)
+| Pred | [(lookup_actor(pred_actor), pred_counter) for pred in predecessors]
+|===
+
+For each unknown column in the column metadata implementations MUST add the
+value of that unknown column to the reference operation. Implementations MUST
+store the column specifiers as well as the values so that the unknown values can
+be written back out when mapping from the reference operation back to the
+change chunk.
+
+The reference change then becomes:
+
+|===
+| Field | Change metadata field
+
+| Actor ID | lookup_actor(change actor)
+| Seq | Change sequence number
+| Message | Change message
+| Dependencies | Change dependencies
+| Operations | The operations mapped above
+| Extra bytes | The extra bytes in the change
+|===
+
+
+
+
+
+[#compressed-chunks]
 === Compressed chunks
 
 Compressed chunks must be decompressed using <<DEFLATE>>. The decompressed chunk
@@ -657,5 +857,5 @@ compressed chunk is another compressed chunk.
 
 * [[[RFC2119]]]: https://datatracker.ietf.org/doc/html/rfc2119
 * [[[RFC8174]]]: https://datatracker.ietf.org/doc/html/rfc8174
-* [[DEFLATE]]: https://datatracker.ietf.org/doc/html/rfc1951
+* [[[DEFLATE]]]: https://datatracker.ietf.org/doc/html/rfc1951
 
