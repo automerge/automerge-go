@@ -11,10 +11,9 @@ Alex Good <alex@memoryandthought.me>; Andrew Jeffery <andrewjeffery97@gmail.com>
 Automerge documents are a directed acyclic graph (DAG) of changes. Each change
 consists of an actor ID, a list of parent changes, and a list of operations.
 We refer to these conceptual structures as the "reference document", "reference
-change", and "reference operation". The storage format achieves good compression
-by using a specific representation of the reference data structures, this
-specification describes how to transform between the compressed and reference
-data structures.
+change", and "reference operation" and collectively as the "reference data
+model". This specification describes a compressed storage format which can be
+mapped to the reference data model.
 
 == Terminology and Conventions
 
@@ -58,13 +57,33 @@ Changes in automerge form a DAG expressed by a list of `SHA256` hashes of direct
 ancestors stored in the `dependencies` field of the <<change-reference,
 change>>.
 
+[#lamport-timestamp]
+=== Lamport timestamp ordering
 
-=== Reference Data Structures
+Operation IDs are lamport timestamps. This imposes a total ordering. To compare
+two lamport timestamps:
 
-The reference data structures are an abstract representation of an automerge
+* If the counter components are different then whichever timestamp has the
+  larger counter is the larger
+* If the counter components are the same but the actor IDs are different then
+  the actor ID which is lexicographically larger is considered the larger
+  timestamp
+* Otherwise the two timestamps are equal
+
+
+=== Reference Data Model
+
+The reference data model is an abstract representation of an automerge
 document. Implementations will generally choose application specific
 representations of the data types but the encoding is defined in terms of
-isomorphisms with the reference data types.
+mappings to and from the reference data model.
+
+Note that for forwards compatibility the reference data model may contain fields
+which we don't know the name or purpose of. This data may be produced by future
+versions of automerge and MUST be retained when mapping to and from the
+reference data model. See <<unknown-columns, unknown colums>> for details on how
+this is achieved in the columnar storage format.
+
 
 [#change-reference]
 ==== Change
@@ -79,15 +98,11 @@ change
 | Dependencies | List of 32 byte arrays | List of hashes of parent changes
 | Operations | List of operations | The operations in this change
 | Extra bytes | Arbitrary byte sequence | Extra data reserved for forward
-compatbility reasons
+compatibility reasons
+3+| ... other unknown fields ... |
 |===
 
 ==== Operations
-
-Note that for forwards compatibility the reference operations contain fields
-which we don't know the name or purpose of. This data may be produced by future
-versions of automerge and MUST be retained when mapping to and from the
-reference data structures.
 
 |===
 | Field | Type | Description
@@ -143,49 +158,18 @@ still treated separately in the data model.
 Unknown fields may contain either a <<primitive-values, primitive value>> or a
 list of lists of primitive values.
 
-=== Column oriented storage
+== Columnar Storage Format
 
-The storage format achieves good compression by storing operations and changes
-in a column oriented manner. That is to say that rather than storing data like
-this:
+=== Overview
 
-[svgbob, target="column-oriented-intro-rows"]
-....
-.---------------------------------------------------.
-|actor ID | object ID | key | action | value | pred | <- 1st operation
-|actor ID | object ID | key | action | value | pred | <- 2nd operation
-| ...                                               |
-`---------------------------------------------------'
-....
+This section specifies a general storage format. This format is used to encode
+several different kinds of data within the different <<chunk-containers, chunk
+types>> of an automerge document. Notably, this storage format is designed to be
+forward compatible, see the section on <<unknown-columns, unknown columns>>.
 
-It is stored like this:
+=== Simple types
 
-[svgbob, target="column-oriented-intro-columns"]
-....
-.---------------+---------------+-----.
-| op1 actor ID  | op2 actor ID  | ... |
-|---------------+---------------+-----|
-| op1 object ID | op2 object ID | ... |
-|---------------+---------------+-----|
-| op1 key ID    | op2 key ID    | ... |
-|---------------+---------------+-----|
-| op1 action ID | op2 action ID | ... |
-|---------------+---------------+-----|
-| op1 value ID  | op2 value ID  | ... |
-|---------------+---------------+-----|
-| op1 pred ID   | op2 pred ID   | ... |
-`---------------+---------------+-----'
-        ^               ^
-        |               |
- 1st operation    2nd operation
-....
-
-i.e. The data for each column is stored contiguously, rather than for each row.
-
-
-== Encoding
-
-=== uLEB and LEB
+==== uLEB and LEB
 
 uLEB is an unsigned https://en.wikipedia.org/wiki/LEB128[little endian base 128] value.
 This is a variable length encoding used throughout this document.
@@ -193,10 +177,10 @@ This is a variable length encoding used throughout this document.
 LEB is the signed variant.
 
 [#action-array]
-=== Action array
+==== Action array
 
-The actions in the reference data structure are encoded as a 0-based index into
-the following array:
+The actions of the reference data model are encoded in the storage format as a
+0-based index into the following array:
 
 |===
 | Action
@@ -243,18 +227,17 @@ how to interpret the data in the data block.
 
 ==== Order of columns
 
-Columns MUST be encoded in ascending <<normalized-column-specifier, normalized
-column specification>> order, implementations MUST abort parsing with an error
-when reading a document if the columns are not in this order.
+Columns MUST be encoded in ascending <<normalized-column-specification, normalized
+column specification>> order, implementations MUST abort parsing a document if
+the columns are not in this order.
 
-The column data MUST be encoded in the data block in the same order as the
-column metadata.
+The column data is encoded in the data block in the same order as the column
+metadata.
 
 [#column-specifications]
 ==== Column Specifications
 
-Column specifications are a 32 bit field encoded like this (column numbering in
-bigendian order):
+Column specifications are a 32 bit field encoded like this:
 
 [bytefield,target="column-id-layout"]
 ....
@@ -272,8 +255,8 @@ bigendian order):
   `0` otherwise
 * The remaining bits are the column ID
 
-Implementations MUST abort with an error if duplicate column specifiers are
-detected when parsing.
+Implementations MUST abort if duplicate column specifications are detected when
+parsing.
 
 If the deflate bit is set then the column data must first be decompressed using
 DEFLATE before proceeding with decoding the values.
@@ -286,39 +269,52 @@ types are:
 | Value | Description | Encoding
 
 | 0 | <<group-columns,Group>> | RLE compressed uLEB
-| 1 | Actor ID | RLE compressed integer
-| 2 | Arbitrary integers | RLE compressed LEB
-| 3 | Arbitrary integers | Delta compressed uLEB
-| 4 | Arbitrary booleans | Boolean
-| 5 | Arbitrary strings | RLE compressed string
+| 1 | <<actor-index-columns, Actor Index>> | RLE compressed integer
+| 2 | Integers | RLE compressed LEB
+| 3 | Positive integers | Delta compressed uLEB
+| 4 | Booleans | Boolean
+| 5 | Strings | RLE compressed utf-8
 | 6 | <<raw-value-columns, Raw value metadata>> | RLE compressed LEB
 | 7 | <<raw-value-columns, Raw values>> | Raw values
 |===
 
-[#normalized-column-specifier]
-===== Normalized column specifiers
+[#normalized-column-specification]
+===== Normalized column specification
 
 Because columns can be optionally compressed there are two possible encodings of
-the same column specifier - one with and one without the compression bit set.
-Column specifiers are normalized by setting their 4th least significant bit to
-0.
+the same column specification - one with and one without the compression bit set.
+Column specifications are normalized by setting their 4th least significant bit
+to 0.
 
 [#column-encodings]
 === Column Encodings
 
+All columns MUST have the same number of values. Note that for grouped columns
+this refers to the number of values in the group column and for value columns
+this refers to the number of values in the value metadata column.
+
+[#actor-index-columns]
+==== Actor Index
+
+Columns which contain actor IDs. Actor IDs are repeated frequently so the column
+value is an index into an array of actors encoded elsewhere. The exact nature of
+the mapping from the index to an actor ID depends on the <<chunk-containers,
+chunk type>>.
+
 [#group-columns]
 ==== Group
 
-A group column specifies a composite, collection-value column. Column specifiers
-following the group column specifier in the metadata block which have the same
-ID as the group column specifier should be read together. The group column
-data consists of <<rle-columns, run length encoded integers>>, the value for
-each row determines how many values should be read from each of the grouped
-columns. Implementations MUST abort with an error if they cannot read this
-number of values from each of the grouped columns.
+A group column specifies a composite, collection-valued column. Column
+specifications following the group column specification in the metadata block
+which have the same ID as the group column specification should be read
+together, these are the "grouped columns". The group column data consists of
+<<rle-columns, run length encoded integers>>, the value for each row determines
+how many values should be read from each of the grouped columns. Implementations
+MUST abort if they cannot read this number of values from each of the grouped
+columns.
 
 An example of this is the `pred` column in the change encoding. The portion of
-the metadata block containing the pred column specifier is encoded thusly
+the metadata block containing the pred column specification is encoded thusly
 
 [svgbob, target="group-example"]
 ....
@@ -343,15 +339,16 @@ counter1], [actor2, counter2], ..., [actor_n, counter_n]]`
 
 Note that it is not possible for two columns in a group to have the same type as
 it would not be possible to have a deterministic ordering for the column
-specifiers. Implementations MUST abort with an error if they encounter two
-column specifiers with the same type and column ID.
+specifications. Implementations MUST abort if they encounter two column
+specifications with the same type and column ID.
 
-Implementations MUST abort with an error if they encounter multiple group
-column specifiers with the same ID.
+Implementations MUST abort if they encounter multiple group column
+specifications with the same ID.
 
-Group column specifiers must be followed by at least one column specifier with
-the same column ID. Implementations MUST abort if a group column specifier
-without a following column specifier of the same ID is encountered.
+Group column specifications must be followed by at least one column
+specification with the same column ID. Implementations MUST abort if a group
+column specification without a following column specification of the same ID is
+encountered.
 
 
 [#rle-columns]
@@ -410,9 +407,9 @@ false]`.
 [#raw-value-columns]
 ==== Raw values
 
-Raw value fields are encoded as two column specifiers. The first has type `6`,
-indicating that it is raw value metadata and the second has type `7`, indicating
-that it contains raw values. The two columns have the same ID. 
+Raw value fields are encoded as two column specifications. The first has type
+`6`, indicating that it is raw value metadata and the second has type `7`,
+indicating that it contains raw values. The two columns have the same ID. 
 
 Implementations MUST abort if they encounter a metadata column which is not
 followed by raw value column with the same ID or a raw value column not
@@ -473,8 +470,24 @@ The interpretation of the value column depends on the type code.
 ** Counter, the underlying data is a uLEB encoded integer.
 ** Timestamp, the underlying data is a uLEB encoded integer.
 
-WARNING: Replacing invalid utf-8 seems like a bad bad move. Should check this
+WARNING: Replacing invalid utf-8 seems like it might be a bad idea? Should check
+this. I _think_ it's what the javascript implementation does though.
 
+[#unknown-columns]
+=== Unknown columns
+
+When reading the column metadata applications may encounter column
+specifications which they are not expecting. These column specifications may be
+produced by future versions of the application. If an implementation encounters
+an unknown column whilst reading data it MUST retain this data when writing that
+data back to storage.
+
+This is possible because every column type has some concept of a null value.
+When inserting new rows into a collection of rows stored in the columnar storage
+format application MUST write a null value into columns which they do not
+recognise for the new rows they are inserting.
+
+WARNING: What should the null value be for boolean columns?
 
 == File structure
 
@@ -515,6 +528,13 @@ sequence `[0x85, 0x6f, 0x4a, 0x83]`|
 
 Implementations MUST abort if the checksum does not match.
 
+[#hash-calculation]
+==== Hash calculation
+
+The checksum is the <<SHA256>> hash of the chunk length and chunk contents
+fields.
+
+
 === Chunk types
 A chunk type is either:
 
@@ -529,14 +549,7 @@ A chunk type is either:
 [#document-chunks]
 === Document Chunks
 
-In order to compress well we encode actor IDs at the start of the document and
-operation IDs in the operation just refer to an offset into this list. We also
-don't encode the hashes of all the changes, instead we just store the heads of
-the graph and we reconstruct the changes and hash them as we decompress the
-document.
-
-We encode both change metadata and operations in column oriented fashion. For
-each data type we first encode the column metadata followed by the column data.
+Document are stored in the following manner:
 
 [bytefield, target="document-chunk-header"]
 ....
@@ -560,115 +573,244 @@ each data type we first encode the column metadata followed by the column data.
 
 
 |===
-| Field                                       | Byte Length     | Description                                       
+| Field                                       | Type            | Description                                       
 
-| Actors length                               | Variable (uLEB) | The number of following actors                    
-| Actors                                      | Variable        | The actor IDs in sorted order                     
-| Heads length                                | Variable (uLEB) | The number of following heads hashes              
-| Heads                                       | 32 * heads length    | The head hashes of the hash graph in sorted order 
-| Changes column metadata                     | Variable        | The change columns metadata                    
-| Operations column metadata                  | Variable        | The operations columns metadata
-| Change bytes                                | Variable        | The actual bytes for the changes                  
-| Operations bytes                            | Variable        | The actual bytes for the operations               
+| Actors length                               | uLEB | The number of following actors                    
+| Actors                                      | Array of actor IDs        | The actor IDs in sorted order                     
+| Heads length                                | uLEB | The number of following heads hashes              
+| Heads                                       | 32 * heads length long byte
+array    | The head hashes of the hash graph in sorted order 
+| Changes column metadata                     | <<column-metadata-block, column
+metadata>>        | The change columns metadata                    
+| Operations column metadata                  | <<column-metadata-block, column
+metadata>>| The operations columns metadata
+| Change bytes                                | Column data        | The actual bytes for the changes                  
+| Operations bytes                            | Column data        | The actual bytes for the operations               
 |===
 
-Actor IDs are encoded as an uLEB int length, followed by the corresponding
-number of bytes.
+Actor IDs are <<length-prefixed-actor-ids,length prefixed>>. Implementations
+MUST abort if the actors array is not lexicographically ordered.
 
-==== Changes
+A single document contains many changes. Change metadata is encoded separately
+to operation data in a column oriented format using the change column metadata
+and change bytes above, whilst the operations are encoded using the operations
+column metadata and operations bytes. The process of decoding these consists of
+first reading all the operation data, then the change metadata using the
+procedures outlined in <<column-encodings, column encodings>>, then matching up
+operations with their change metadata to construct the reference document.
 
-Changes are encoded in causal order (a topological sort of the hash graph).
+[#document-actor-lookup]
+==== Actor lookup
 
-The change metadata contains the column ids that are present in the encoding.
-Empty columns (those with no data) are not included.
-
-The possible column IDs are as follows:
-
-|===
-| ID  | Name       | Encoding   | Type of Data                                                    
-                                                                                                  
-| 1   | Actor      | uLEB RLE   | Position of the actor in the sorted actors list                 
-| 3   | Seq        | Delta      | Value of the sequence counter for this change                   
-| 19  | Max Op     | Delta      | The maximum sequence number of the operations in this change    
-| 35  | Time       | Delta      | The timestamp this change was produced at                       
-| 53  | Message    | String RLE | The message this change came with                               
-| 64  | Deps num   | uLEB RLE   | The number of dependencies this change has                      
-| 67  | Deps index | Delta      | The indices of the dependencies, as they appear in the document 
-| 86  | Extra len  | uLEB RLE   | Length of the extra bytes                                       
-| 87  | Extra raw  | None       | The raw extra bytes                                             
-|===
+Actors in the document encoding are encoded in lexicographic order in the actors
+array at the start of the document. Actor indexes throughout the document refer
+to the index into this array.
 
 
+[#document-operations]
 ==== Operations
 
-Operations are extracted from changes and grouped by the object that they manipulate.
-Objects are then sorted by their IDs to make them appear in causal order too.
-
-The operations informatino contains the column ids that are present in the encoding.
-Empty columns (those with no data) are not included.
-
-For each included column the following is encoded:
-
-For each operation we encode its information in the following columns:
+The columns in the operation storage are at least the following:
 
 |===
-| Column            | Type of Data                                                     
+| Field | Specification | Type | Description
+ 
+| Object actor | 1 | Actor index | actor index of object ID this operation targets
+| Object counter | 2 | RLE compressed uLEB | counter of the object ID this operation targets
+| Key actor | 17 | Actor index | actor of the operation ID of the key of this operation
+| Key counter | 19 | Delta compressed uLEB | counter of the operation ID of the key of this
+  operation
+| Key string | 21 | RLE compressed utf-8 | The string key this operation targets
+| actor | 33 | Actor index | The actor of this operations ID
+| counter | 35 | Delta compressed uLEB | The counter of this operations ID
+| insert | 52 | Boolean | Whether or not this is an insert operation
+| action | 66 | RLE compressed uLEB | The action index of this operation
+| value metadata | 86 | Value metadata | The metadata for the value of this operation
+| value | 87 | Value contents | The value of this operation
+| successor group | 128 | Group | The group for the successors of this operation
+| successor actor | 129 | Actor index | The actor of each successor operation ID of this operation
+| successor counter | 131 | Delta compressed uLEB | The counter of each successor operation ID of
+this operation
+|===
 
-| OpID Actor        | Position of the actor part of the OpID in the sorted actor list  
-| OpID Counter      | The counter part of this OpID                                    
-| Insert            | Whether this operation is an insert or not                       
-| Action            | Action type that this operation performs                         
-| Object ID actor   | The actor part of the object this operation manipulates          
-| Object ID counter | The counter part of the object this operation manipulates        
-| Key actor         | The actor part of this key (if a sequence index)                 
-| Key counter       | The counter part of this key (if a sequence index)               
-| Key string        | The string part of this key (if a map key)                       
-| Value ref counter | The counter part of the OpID this cursor refers to (cursor only) 
-| Value ref actor   | The actor part of the OpID this cursor refers to (cursor only)   
-| Value length      | The length of the encoded raw value in bytes                     
-| Value raw         | The actual value                                                 
-| Successors number | The number of successors in this operation                       
-| Successor actor   | The actor part of the successor                                  
-| Successor counter | The counter part of the successor                                
+WARNING: The javascript implementation includes a `child` column, is this
+required?
+
+Any unknown columns MUST be preserved when decoding and written back out when
+encoding as per <<unknown-columns, unknown columns>>.
+
+We determine the key that the operation refers to thusly:
+
+* If the key string is not null then this is the key of the operation
+* Otherwise we use the pair (lookup_actor(key actor), key counter) as the key of the operation
+* If key string is null and any of key actor or key counter are null
+  implementations MUST abort
+
+Using this procedure we can write the operations as:
+
+|===
+| Field | Type | Mapping to columns
+
+| Object | Operation ID | (lookup_actor(object actor), object counter)
+| Key | either string or operation ID | The value determined above
+| Id | Operation ID | (lookup_actor(actor), counter)
+| Insert | boolean | insert
+| Action | action | <<action-array, action index lookup>>
+| Value | primitive value | value metadata and value columns
+| Successors | list of operation ID | (lookup_actor(actor), counter) for actor,
+and counter in the success group column
 |===
 
 ==== Order of operations
 
-Operations must appear in a specific order, as follows:
+Operations are grouped by the object that they manipulate. Objects are then
+sorted by their IDs. Thus operations are ordered using the following procedure:
 
-* First sort by objectId, such that any operations for the same object are consecutive in the file.
-  The null objectId (i.e. the root object) is sorted before all non-null objectIds.
-  Non-null objectIds are sorted by Lamport timestamp ordering.
-* Next, if the object is a map, sort the operations within that object lexicographically by key,
-  so that all operations for the same key are consecutive. This sort order should be based on the
-  UTF-8 byte sequence of the key. NOTE: the JavaScript implementation currently does not do this
-  sorting correctly, since it sorts by JavaScript string comparison, which differs from UTF-8
-  lexicographic ordering for characters beyond the basic multilingual plane.
-* If the object is a list or text, sort the operations within that object by the position at which
-  they occur in the sequence, so that all operations that relate to the same list element are
-  consecutive. Tombstones are treated just like any other list element. To determine the list element
-  that an operation relates to, the following rule applies: for insertions (operations where the
-  insert column is true), the opId is the list element ID; for updates or deletes (where insert is
-  false), the key (keyCtr and keyActor columns, known as elemId in the JSON representation) is the
-  list element ID.
-* Among the operations for the same key (for maps) or the same list element (for lists/text), sort
-  the operations by their opId, using Lamport timestamp ordering. For list elements, note that the
-  operation that inserted the operation will always have an opId that is lower than the opId of any
-  operations that updates or deletes that list element, and therefore the insertion operation will
-  always be the first operation for a given list element.
+WARNING: Is this required? If so should implementations abort if the operations
+are not inthis order?
 
-==== Hash verification
+* First sort by object ID, such that any operations for the same object are
+  consecutive. The null objectId (i.e. the root object) is sorted before all
+  non-null objectIds. Non-null objectIds are sorted by <<lamport-timestamp,
+  Lamport timestamp>>.
+* For each object:
+** if the object is a map, sort the operations within that object
+   lexicographically by key, so that all operations for the same key are
+   consecutive. This sort order MUST be based on the UTF-8 byte sequence of the
+   key. 
+** If the object is a list or text, sort the operations within that object by the
+   operation ID of the element they target. This is determined as follows:
+*** For insert operations the target element is the operation ID of the
+    inserting operation
+*** For `set` or `delete` operations the target is the operation ID in the `key`
+    field
+* Among the operations for the same key (for maps) or the same list element (for
+  lists/text), sort the operations by their opId, using <<lamport-timestamp,
+  lamport timestamp>> ordering. For list elements, note that the operation that
+  inserted the operation will always have an opId that is lower than the opId of
+  any operations that updates or deletes that list element, and therefore the
+  insertion operation will always be the first operation for a given list
+  element.
 
-TODO: specify how to reconstruct change hashes from the document and verify that the heads match
 
-==== Encoding algorithm
+WARNING: the JavaScript implementation currently does not do this sorting
+correctly, since it sorts keys by JavaScript string comparison, which differs
+from UTF-8 lexicographic ordering for characters beyond the basic multilingual
+plane.
 
-TODO: write down the algorithm for encoding a document based on the above
+===== Successors and omitting deletes
 
-==== Decoding algorithm
+The document storage format does not encode a predecessors field. Instead this
+information is encoded in the `successors` field. This can be used to
+reconstruct the predecessors field from the reference data model.
 
-TODO: write down the algorithm for decoding a document based on the above
+Delete operations do not carry any information other than the object ID and key
+they are deleting. As such they are encoded in the document by appending the
+operation ID of the delete operation to the successors of the operation creating
+the data to be deleted.
 
+Implementations MUST abort if they encounter explicitly encoded delete
+operations in a document chunk.
+
+[#document-change-metadata]
+==== Change Metadata
+
+The columns in the change metadata are at least the following:
+
+|===
+| Name | Specification | Type | Description
+
+| Change actor | 1 | Actor  |
+| Sequence number | 3 | Delta compressed uLEB |
+| maxOp | 19 | Delta compressed uLEB | The largest counter that occurs in this
+change
+| time | 35 | Delta compressed uLEB |
+| message | 53 | RLE Compressed UTF-8 |
+| dependencies group | 64 | Group |
+| dependencies index | 67 | Delta compressed uLEB |
+| value metadata | 86 | Value metadata |
+| value | 87 | Value raw |
+|===
+
+Any unknown columns MUST be preserved when decoding and written back out when
+encoding as per <<unknown-columns, unknown columns>>.
+
+Each row in the column oriented change metadata therfore can be written as:
+
+|===
+| Field | Type | Mapping
+
+| Actor | positive integer | lookup_actor(change actor)
+| Seq | positive integer | sequence number
+| maxOp | positive integer | maxOp
+| time | positive integer | time
+| message | utf-8 | message
+| deps | list of integers | read dependencies group and dependencies
+index columns
+| extra | primitive value | read the value metadata and value raw columns
+|===
+
+The `deps` field refers to the index of the changes this change depends on in
+the change metadata rows. Implementations MUST abort if `deps` references an
+index which is out of bounds.
+
+For a given actor the `seq` field of changes must strictly increase by `1`.
+Implementations MUST abort if there are missing changes for a given actor ID.
+
+The `maxOp` field of the change refers to the largest counter component of an
+operation ID in the set of operations in this change. For a given actor ID this
+must always increase. Implementations MUST abort if the `maxOp` of a change is
+not larger than all the `maxOp` of changes from that actor with smaller `seq`.
+
+==== Mapping to the reference data model
+
+Operations in the document format are not stored in the order they were
+generated, as they are in the change data model. Furthermore, oeprations in the
+document format have a `successor` rather than `predecessor` field. The
+following procedure specifies how to map from document operations to the change
+operations. "document operation" refers to the data structure derived at the end
+of <<document-operations, document operations>> and "document change" refers to
+the data structure dervied at the end of <<document-change-metadata>>.
+
+First expand operations:
+
+* Add an empty predecessor list to every document operation
+* For each operation in the document operation rows
+** For each operation ID in the successors list of the document operation lookup
+   the target operation in the document operations:
+*** If an operation is found add the current operation ID to the
+    target operations predecessor list
+*** If no operation is found then insert a new delete operation into the
+    document with its ID set to the target operation ID, the object and key
+    set to the same value as the current operation, and the predecessor set to
+    the current operation.
+
+Second, match up changes:
+
+For each document operation
+* Sort all the changes for the same actor as the operation ID by ascending
+  `maxOp`
+* Add the document operation to the first change which has `maxOp >= counter`
+  where `counter` is the counter component of the operation ID.
+
+Implementations MUST abort if no matching change is found
+
+For each change sort the operations within the change by
+<<lamport-timestamp>> of the operation ID.
+
+===== Hash verification
+
+The dependencies in the document model are expressed as integer offsets. But in
+the reference data model dependencies are expressed as a hash of the ancestor
+changes. To map to the hash based representation perform a topological traversal
+of the dependency graph and for each change encode the change as per
+<<change-chunks>> and then calculate the hash of the change as in
+<<hash-calculation>>, then for every change replace the index of the current
+change with the calculated hash.
+
+Once this procedure is complete take the heads of the depedency graph and
+compare their hashes with the head hashes field in the document chunk. If the
+hashes don't match implementations MUST abort.
 
 [#change-chunks]
 === Change chunks
@@ -680,8 +822,8 @@ The fields in a change chunk, in order, are:
 
 | Dependency count | uLEB | The number of hashes in the dependencies fields
 | Dependencies | 32 * dependency count long byte array | The dependency hashes
-| Actor length | uLEB | The length of the actor IDs
-| Actor | byte array | The actor IDs
+| Actor length | uLEB | The length of the actor ID
+| Actor | byte array | The actor ID
 | Sequence number | uLEB | The sequence number
 | Start op | uLEB | The counter of the first op in this change 
 | Time | uLEB | The time this change was created in milliseconds since the unix
@@ -698,15 +840,8 @@ change
 | Extra bytes | Byte array | The additional unknown data
 |===
 
-Each actor ID in the other actors array is a length prefixed actor ID. I.e. it
-is
-
-[svgbob, target="length-prefixed-actor"]
-....
-.--------------+-------.
-| Length: uLEB | Bytes |
-`--------------+-------'
-....
+Each actor ID in the other actors array is a <<length-prefixed-actor-ids, length
+prefixed actor ID>>. 
 
 The actor IDs in the other actors array are lexicographically ordered.
 Implementations MUST abort when parsing a change which does not present the
@@ -716,8 +851,8 @@ actors in this order.
 ==== Change operation columns
 
 The column specifications in the operation metadata must include the following
-(note that the column types are redundant as they are included in the specifier
-but we elaborate them for clarity):
+(note that the column types are redundant as they are included in the
+specification but we elaborate them for clarity):
 
 
 |===
@@ -743,16 +878,17 @@ predecessors of this op
 WARNING: The javascript implementation includes a `child` actor ID here. It
 doesn't seem to be needed though, is it obsolete?
 
-Reading implementations MUST abort if any of these column specifiers are not
+Reading implementations MUST abort if any of these column specifications are not
 present.
 
-There may be additional columns preset, implementations MUST read these columns
-when translating to the reference data structure.
+There may be additional columns present, implementations MUST read these columns
+when translating to the reference data model as per <<unknown-columns, unknown
+columns>>.
 
 ===== Compressed columns
 
 Compressed columns are not permitted in change chunks. Implementations MUST
-abort if they encounter a column specifier with the defalte bit set.
+abort if they encounter a column specification with the deflate bit set.
 
 [#change-actor-lookup]
 ==== Actor ID lookup
@@ -762,10 +898,9 @@ concatenation `[change actor ID] + other actor IDs` from the change metadata.
 Implementations MUST abort if an actor index is read which is not present in
 this concatenation.
 
-==== Mapping to the reference data structure
+==== Mapping to the reference data model
 
-After reading the <<change-operation-columns,operation-columns>> each row has
-the following format:
+Each row in the column oriented operation storage has the following format:
 
 |===
 | Field | Type
@@ -808,7 +943,7 @@ We determine the key that the operation refers to thusly:
 * If key string is null and any of key actor or key counter are null
   implementations MUST abort
 
-We map these fields to the reference data structure as follows:
+We map these fields to the reference data model as follows:
 
 |===
 | Reference operation field | Change column field mapping
@@ -823,8 +958,8 @@ index
 
 For each unknown column in the column metadata implementations MUST add the
 value of that unknown column to the reference operation. Implementations MUST
-store the column specifiers as well as the values so that the unknown values can
-be written back out when mapping from the reference operation back to the
+store the column specifications as well as the values so that the unknown values
+can be written back out when mapping from the reference operation back to the
 change chunk.
 
 The reference change then becomes:
@@ -840,10 +975,6 @@ The reference change then becomes:
 | Extra bytes | The extra bytes in the change
 |===
 
-
-
-
-
 [#compressed-chunks]
 === Compressed chunks
 
@@ -852,10 +983,23 @@ is a chunk container which should be interpreted as per <<chunk-containers,
 chunk containers>>. Implementations SHOULD raise an error if the contents of a
 compressed chunk is another compressed chunk.
 
+[#length-prefixed-actor-ids]
+=== Length prefixed actor IDs
+
+Actor IDs are stored in length prefixed form as follows
+
+[svgbob, target="length-prefixed-actor"]
+....
+.--------------+-------.
+| Length: uLEB | Bytes |
+`--------------+-------'
+....
+
+
 [bibliography]
 == References
 
 * [[[RFC2119]]]: https://datatracker.ietf.org/doc/html/rfc2119
 * [[[RFC8174]]]: https://datatracker.ietf.org/doc/html/rfc8174
 * [[[DEFLATE]]]: https://datatracker.ietf.org/doc/html/rfc1951
-
+* [[[SHA256]]]: https://datatracker.ietf.org/doc/html/rfc4634
