@@ -788,6 +788,7 @@ First expand operations:
 Second, match up changes:
 
 For each document operation
+
 * Sort all the changes for the same actor as the operation ID by ascending
   `maxOp`
 * Add the document operation to the first change which has `maxOp >= counter`
