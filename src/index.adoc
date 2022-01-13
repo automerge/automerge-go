@@ -107,12 +107,11 @@ compatibility reasons
 |===
 | Field | Type | Description
 
-| Object ID | Operation ID | The ID of the object this operation changes
+| Object ID | Operation ID | The ID of the object this operation pertains to
 | Key | String or operation ID | The map property or sequence element within the
 object
 | Action | Action | The change this operation is making
 | Value | Optional <<primitive-values, primitive value>> | The payload of this operation (if any)
-object,that this operation pertains to
 | Pred | List of operation IDs | Previous operations this operation supercedes
 | Unknown field 1 | an <<unknown-field-values, unknown field>>| forward
 compatible data
