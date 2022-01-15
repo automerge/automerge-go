@@ -515,34 +515,36 @@ chunk.
 ....
 
 |===
-| Field                   | Byte Length     | Description                                          |
+| Field                   | Byte Length     | Description
 
 | Magic Bytes             | 4               | Some magic bytes, specifically the
-sequence `[0x85, 0x6f, 0x4a, 0x83]`|
-| Checksum                | 4               | First 4 bytes of the SHA256 of the encoded chunk     |
-| Block Type              | 1               | The type of this chunk|
-| Chunk length            | Variable (uLEB) | The length of the following chunk bytes              |
-| Chunk | Variable        | The actual bytes for the chunk                       |
+sequence `[0x85, 0x6f, 0x4a, 0x83]`
+| Checksum                | 4               | First 4 bytes of the SHA256 of the encoded chunk
+| Block Type              | 1               | The type of this chunk
+| Chunk length            | Variable (uLEB) | The length of the following chunk bytes
+| Chunk | Variable        | The actual bytes for the chunk
 |===
 
-Implementations MUST abort if the checksum does not match.
+If the first four bytes are not exactly the magic bytes implementations MUST abort.
 
 [#hash-calculation]
-==== Hash calculation
+==== Hash and checksum calculation
 
-The checksum is the <<SHA256>> hash of the chunk length and chunk contents
-fields.
+The hash is the <<SHA256>> hash of the concatenation of the chunk length
+and chunk contents fields. The checksum calculated from this hash is the first
+four bytes of the hash. Implementations MUST abort reading if the checksum does
+not match.
 
 
 === Chunk types
 A chunk type is either:
 
 |===
-| Value | Description|
+| Value | Description
 
-| `0` | A <<document-chunks, document chunk>>, containing an entire change graph |
-| `1` | A <<change-chunks, change chunk>>, containing some change metadata and some operations |
-| `2` | A deflate <<compressed-chunks, compressed chunk>> |
+| `0` | A <<document-chunks, document chunk>>, containing an entire change graph
+| `1` | A <<change-chunks, change chunk>>, containing some change metadata and some operations
+| `2` | A deflate <<compressed-chunks, compressed chunk>>
 |===
 
 [#document-chunks]
@@ -603,7 +605,8 @@ operations with their change metadata to construct the reference document.
 
 Actors in the document encoding are encoded in lexicographic order in the actors
 array at the start of the document. Actor indexes throughout the document refer
-to the index into this array.
+to the index into this array. We use the syntax `lookup_actor(actor_index)` to
+refer to this procedure.
 
 
 [#document-operations]
@@ -856,23 +859,23 @@ specification but we elaborate them for clarity):
 
 
 |===
-| Specification | Type | Description
+| Field | Specification | Type | Description
 
-| 1   | Actor | The actor of the ops object ID
-| 2   | RLE compressed uLEB | The counter of the ops object ID
-| 17  | Actor | The (optional) actor of the ops key 
-| 19  | Delta Compressed uLEB | The (optional) counter of the ops key 
-| 21  | RLE Compressed UTF-8 | The (optional) string of the ops key
-| 33  | Actor | The actor of the ops op ID
-| 35  | Delta compressed uLEB | The counter of the ops op ID
-| 52  | Boolean | Whether or not this is an insert operation
-| 66  | RLE compressed uLEB | The <<action-array, action index>> for the op
-| 86  | Value length | The value metadata for the op
-| 87  | Value raw | The raw value for the op
-| 112 | Group | The <<group-columns, group column>> for the
+| object actor |1   | Actor Index | The actor of the ops object ID
+| object counter  |2   | RLE compressed uLEB | The counter of the ops object ID
+| key actor |17  | Actor | The (optional) actor of the ops key 
+| key counter |19  | Delta Compressed uLEB | The (optional) counter of the ops key 
+| key string |21  | RLE Compressed UTF-8 | The (optional) string of the ops key
+| ID actor |33  | Actor index | The actor of the ops op ID
+| ID counter |35  | Delta compressed uLEB | The counter of the ops op ID
+| insert |52  | Boolean | Whether or not this is an insert operation
+| action index |66  | RLE compressed uLEB | The <<action-array, action index>> for the op
+| value metadata |86  | Value meta | The value metadata for the op
+| value raw |87  | Value raw | The raw value for the op
+| pred group |112 | Group | The <<group-columns, group column>> for the
 predecessors of this op
-| 113 | Actor | The actor component of the predecessors
-|115 | RLE Compressed uLEB | The counter component of the predecessors
+| pred actor index |113 | Actor | The actor component of the predecessors
+| pred counter |115 | RLE Compressed uLEB | The counter component of the predecessors
 |===
 
 WARNING: The javascript implementation includes a `child` actor ID here. It
@@ -900,60 +903,29 @@ this concatenation.
 
 ==== Mapping to the reference data model
 
-Each row in the column oriented operation storage has the following format:
-
-|===
-| Field | Type
-
-| Obj actor | Int
-| Obj counter | Int
-| Key actor | Int
-| Key counter | Int
-| Key string | String
-| Op Actor | Int
-| Op counter | Int
-| Insert | Boolean
-| Action | Int
-| Value | <<primitive-values, primitive value>>
-| Predecessors | List of [actor, counter] pairs
-2+| Unknown columns ... 
-|===
-
-Note that all of these fields could be null in the encoded document.
-Implementations MUST abort if upon reading they find that any of the following
-are null:
-
-* Obj actor
-* Obj counter
-* Op actor
-* Op counter
-* Action
-
-The action of the operation should be determined with reference to
-<<action-array, the action array>>. Implementations MUST abort if the action
-index is not a valid action.
-
 We lookup actors using the notation `lookup_actor(actor Index)` which refers to
 the process specified in <<change-actor-lookup, actor ID lookup>>.
 
-We determine the key that the operation refers to thusly:
+We determine the key that a row refers to thusly:
 
-* If the key string is not null then this is the key of the operation
+* If the key string column is not null then this is the key of the operation
 * Otherwise we use the pair (lookup_actor(key actor), key counter) as the key of the operation
 * If key string is null and any of key actor or key counter are null
   implementations MUST abort
 
-We map these fields to the reference data model as follows:
+We can then map the columns to the reference data model as follows:
 
 |===
-| Reference operation field | Change column field mapping
+| Field | Mapping from column
 
-| Object ID | (lookup_actor(obj actor), obj counter)
+| Object ID | `(lookup_actor(object actor), object counter)`
+| Op ID | `(lookup_actor(ID actor), ID counter)`
 | Key | The key determined above
 | Action | The action from the <<action-array>> corresponding to the action
 index
-| Value | The value from the change operation (note this may be null)
-| Pred | [(lookup_actor(pred_actor), pred_counter) for pred in predecessors]
+| Value | The value read from the value metadata and value raw columns
+| Pred | `(lookup_actor(pred_actor), pred_counter)` for pred_actor and
+pred_counter in the predecessors group column
 |===
 
 For each unknown column in the column metadata implementations MUST add the

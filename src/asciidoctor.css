@@ -37,7 +37,7 @@ video {
 
 @media all and (max-width: 600px) {
 table {
-  width: 55vw!important;
+  /*width: 55vw!important;*/
   font-size: 3vw;
 }
 
