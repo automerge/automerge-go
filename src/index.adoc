@@ -846,9 +846,7 @@ epoch
 | ops column metadata | <<column-metadata-block, Ops column metadata>> | The
 metadata for the column oriented operation encoding 
 | Ops column data | ops column data | The column data for the operations
-| Extra bytes len | uLEB | The length of any additional, unknown data in this
-change
-| Extra bytes | Byte array | The additional unknown data
+| Extra bytes | Byte array | Any data remaining in the chunk
 |===
 
 Each actor ID in the other actors array is a <<length-prefixed-actor-ids, length
@@ -857,6 +855,8 @@ prefixed actor ID>>.
 The actor IDs in the other actors array are lexicographically ordered.
 Implementations MUST abort when parsing a change which does not present the
 actors in this order.
+
+Note the extra data must be retained when writing the change back to storage.
 
 [#change-operation-columns]
 ==== Change operation columns
