@@ -377,21 +377,21 @@ length encoding section.
 
 For example, the sequence 
 
-|===
-|1|2|3|4|5|10|15
-|=== 
+....
+[1,2,3,4,5,10,15]
+....
 
 Would be encoded as 
 
-|===
-|1|1|1|1|1|5|5
-|===
+....
+[1,1,1,1,1,5,5]
+....
 
 This sequence is then run length encoded to given
 
-|===
-| (5,1) | (2,5) 
-|===
+....
+[(5,1), (2,5)]
+....
 
 ==== Boolean
 
