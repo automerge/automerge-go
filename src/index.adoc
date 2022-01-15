@@ -215,7 +215,7 @@ The column metadata consists of pairs of the form
 |===
 | Field | Description
 
-| <<column-specifications, Column Specification>> | a 32 bit integer
+| <<column-specifications, Column Specification>> | a uLEB integer
 | Column data length | uLEB encoding of the length of the data for this column in the data
 block 
 |===
@@ -236,7 +236,15 @@ metadata.
 [#column-specifications]
 ==== Column Specifications
 
-Column specifications are a 32 bit field encoded like this:
+Column specifications are a uLEB encoded integer which should be interpreted
+as a bitfield like so:
+
+WARNING: This allows column IDs to be arbitrarily large which means
+implementations will need to choose how large they want to allow them to be
+(e.g. the javascript implementation choose 2^53 whilst the rust implementation
+uses 32 bit integers. This may be a problem because column IDs are not actually
+integers so there's no reason to think that they won't hit the ends of these
+ranges. We shold probably specify a size.
 
 [bytefield,target="column-id-layout"]
 ....
