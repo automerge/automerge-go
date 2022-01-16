@@ -418,11 +418,14 @@ Raw value fields are encoded as two column specifications. The first has type
 `6`, indicating that it is raw value metadata and the second has type `7`,
 indicating that it contains raw values. The two columns have the same ID. 
 
-Implementations MUST abort if they encounter a metadata column which is not
-followed by raw value column with the same ID or a raw value column not
-preceeded by a metadata column with the same ID. Implemtations MUST also abort
-if they encounter more than one metadata column with the same column ID, or more
-than one raw value column with the same ID.
+Note that raw value columns which do not contain values may be omitted. If
+implementations encounter a lone value metadata column they must assume that it
+is accompanied by an empty raw value column.
+
+Implementations must abort if they encounter  a raw value column not preceeded
+by a metadata column with the same id. implementations must also abort if they
+encounter more than one metadata column with the same column id, or more than
+one raw value column with the same id.
 
 These two colums are intepreted together. The metadata column contains RLE
 compressed LEB integers. These integers are laid out like so
