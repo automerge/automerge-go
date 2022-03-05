@@ -401,6 +401,10 @@ This sequence is then run length encoded to given
 [(5,1), (2,5)]
 ....
 
+WARNING: What should the null value be for a delta column? How should
+applications handle a decoded delta value which takes the absolute value below
+zero?
+
 ==== Boolean
 
 This encoding is only available for columns containing booleans. The column
@@ -580,6 +584,7 @@ Document are stored in the following manner:
 (draw-gap "operations metadata")
 (draw-gap "change bytes")
 (draw-gap "operations bytes")
+(draw-gap "head indexes")
 (draw-bottom)
 ....
 
@@ -598,6 +603,7 @@ metadata>>        | The change columns metadata
 metadata>>| The operations columns metadata
 | Change bytes                                | Column data        | The actual bytes for the changes                  
 | Operations bytes                            | Column data        | The actual bytes for the operations               
+| <<head-indexes,Head indexes>>               | Array of uLEB | The indices of the heads in the changes
 |===
 
 Actor IDs are <<length-prefixed-actor-ids,length prefixed>>. Implementations
@@ -825,6 +831,13 @@ change with the calculated hash.
 Once this procedure is complete take the heads of the depedency graph and
 compare their hashes with the head hashes field in the document chunk. If the
 hashes don't match implementations MUST abort.
+
+[#head-indexes]
+==== Head Indexes
+
+The head indexes is an array of uLEBs. There is one index for each head, the
+indexes are in the same order as the head hashes. Each index refers to the
+change in the change metadata to which the head hash is a reference.
 
 [#change-chunks]
 === Change chunks
