@@ -361,10 +361,20 @@ encountered.
 [#rle-columns]
 ==== RLE
 
-Run length encoding of values. The exact type of value depends is specified by
-the column type in <<column-types-table, column types>>. A "run" is encoded as
-pairs of the form `(length,value)`. `length` is a signed LEB encoding of the
-length of the run. the interpretation of `value` depends on `length`.
+Run length encoding of values. The type of values in a column will be one of
+the following: 
+
+* uLEB encoded integers
+* LEB encoded integers
+* Length prefixed UTF-8 strings which consist of a uLEB encoded integer
+  followed by that number of UTF-8 bytes
+
+For a given RLE column the type is specified by the column type in
+<<column-types-table, column types>>. 
+
+A "run" in an RLE columns is encoded as pairs of the form `(length,value)`.
+`length` is a signed LEB encoding of the length of the run. the interpretation
+of `value` depends on `length`.
 
 * If `length` is positive, then `value` is a single instance of the value which
   occurs `length` times.
@@ -373,7 +383,6 @@ length of the run. the interpretation of `value` depends on `length`.
 * If `length` is negative then `value` is a literal run and the absolute value
   of `length` is the number of items in the literal run. That is to say, there
   is no compression.
-
 
 ==== Delta
 
