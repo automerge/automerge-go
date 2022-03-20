@@ -298,7 +298,10 @@ to 0.
 
 All columns MUST have the same number of values. Note that for grouped columns
 this refers to the number of values in the group column and for value columns
-this refers to the number of values in the value metadata column.
+this refers to the number of values in the value metadata column. The only
+exception to this rule is if every single value in the column is `null` (for
+column types which admit a null value), in which case the column length may be
+`0` and implementations must fill in null values for each row.
 
 [#actor-index-columns]
 ==== Actor Index
