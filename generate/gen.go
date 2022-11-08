@@ -49,5 +49,7 @@ func main() {
 		cFile += signature + "AMresultValue" + suffix + "(AMresult *r) { return AMresultValue(r)." + name + "; }\n"
 	}
 
+	cFile += "\n"
+
 	fmt.Print(cFile)
 }
