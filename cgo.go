@@ -59,9 +59,9 @@ var (
 	// KindFloat64 indicates a float64
 	KindFloat64 Kind = C.AM_VALUE_F64
 	// KindInt indicates an int
-	KindInt Kind = C.AM_VALUE_INT
+	KindInt64 Kind = C.AM_VALUE_INT
 	// KindUint indicates a uint
-	KindUint Kind = C.AM_VALUE_UINT
+	KindUint64 Kind = C.AM_VALUE_UINT
 	// KindNull indicates an explicit null was present
 	KindNull Kind = C.AM_VALUE_NULL
 	// KindStr indicates a string
@@ -79,7 +79,10 @@ var (
 	KindText Kind = 1024
 )
 
-// ActorId represents an actor working on the document.
+// ActorId identifies the "actor" who is modifying a document.
+// Each operation applied to the document is identified by its
+// actorId and a counter, so it is important that each actor
+// generates a linear history of edits.
 type ActorId struct {
 	v *C.AMactorId
 }
@@ -91,11 +94,6 @@ func (a *ActorId) init(r *C.AMresult) error {
 
 	a.v = C.AMresultValueActorId(r)
 	return nil
-}
-
-func (a *ActorId) forC(f func(v *C.AMactorId)) {
-	defer runtime.KeepAlive(a)
-	f(a.v)
 }
 
 // NewActorId creates a new random actor id
@@ -204,17 +202,16 @@ func (d *Doc) Root() *Map {
 	return &Map{doc: d, objId: &objId{v: (*C.AMobjId)(C.AM_ROOT)}}
 }
 
-// Get returns the root of the document, it is always
+// RootValue returns the root of the document as
 // a Value with Kind() == KindMap
-func (d *Doc) Get() *Value {
+func (d *Doc) RootValue() *Value {
 	return &Value{kind: KindMap, val: d.Root()}
 }
 
-// Path returns a path that points to a position in the doc.
-// Each path component must be of type string or int.
-// Creating a path will always succeed, and any errors caused
-// by trying to traverse the path will be reported when it is
-// actually used.
+// Path returns a [*Path] that points to a position in the doc.
+// path will panic unless each path component is a string or an int.
+// Passing no arguments to Path() returns a path pointing to the root of the
+// document.
 func (d *Doc) Path(path ...any) *Path {
 	return (&Path{d: d}).Path(path...)
 }
@@ -271,6 +268,16 @@ func (d *Doc) ActorId() (*ActorId, error) {
 	defer unlock()
 
 	return call[*ActorId](C.AMgetActorId(cDoc))
+}
+
+// SetActorId updates the current actorId of the doc.
+func (d *Doc) SetActorId(ai *ActorId) error {
+	cDoc, unlock := d.lock()
+	defer unlock()
+	defer runtime.KeepAlive(ai)
+
+	_, err := call[*void](C.AMsetActorId(cDoc, ai.v))
+	return err
 }
 
 type byteSpan struct {
@@ -330,6 +337,14 @@ func (ch *ChangeHashes) init(r *C.AMresult) error {
 	return nil
 }
 
+// Cmp returns -1 if ch < ch2, 0 if they are equal and 1 if ch > ch2
+func (ch *ChangeHashes) Cmp(ch2 *ChangeHashes) int {
+	defer runtime.KeepAlive(ch)
+	defer runtime.KeepAlive(ch2)
+
+	return int(C.AMchangeHashesCmp(&ch.v, &ch2.v))
+}
+
 // Map is an automerge type that stores a map of strings to values
 type Map struct {
 	doc   *Doc
@@ -342,12 +357,28 @@ func (m *Map) lock() (*C.AMdoc, *C.AMobjId, func()) {
 	return cDoc, m.objId.v, unlock
 }
 
+// NewMap returns a detached map.
+// Before you can read from or write to it you must write it to the document.
 func NewMap() *Map {
 	return &Map{}
 }
 
-func NewList() *List {
-	return &List{}
+// Len returns the number of keys set in the map, or 0 on error
+func (m *Map) Len() int {
+	if m.objId == nil {
+		if m.path == nil {
+			return 0
+		}
+		m2, err := As[*List](m.path.Get())
+		if err != nil {
+			return 0
+		}
+		return m2.Len()
+	}
+
+	cDoc, cObj, unlock := m.lock()
+	defer unlock()
+	return int(C.AMobjSize(cDoc, cObj, nil))
 }
 
 // Set sets a key in the map to a given value.
@@ -357,7 +388,7 @@ func NewList() *List {
 func (m *Map) Set(key string, value any) error {
 	if m.objId == nil {
 		if m.path == nil {
-			return fmt.Errorf("automerge.Map#Set called on detached Map")
+			return fmt.Errorf("automerge.Map: tried to write to detached map")
 		}
 		m2, err := m.path.ensureMap(key)
 		if err != nil {
@@ -414,11 +445,7 @@ func (m *Map) Set(key string, value any) error {
 		}
 		list := &List{doc: m.doc, objId: objId}
 		unlock()
-		for _, item := range v {
-			if err := list.Append(item); err != nil {
-				return err
-			}
-		}
+		return list.Append(v...)
 
 	case map[string]any:
 		objId, err := call[*objId](C.AMmapPutObject(cDoc, cObj, cstr, C.AM_OBJ_TYPE_MAP))
@@ -436,7 +463,7 @@ func (m *Map) Set(key string, value any) error {
 
 	case *Map:
 		if v.objId != nil {
-			return fmt.Errorf("automerge.Map#Set: cannot move an existing *automerge.Map")
+			return fmt.Errorf("automerge.Map: tried to move an existing *automerge.Map")
 		}
 
 		objId, err := call[*objId](C.AMmapPutObject(cDoc, cObj, cstr, C.AM_OBJ_TYPE_MAP))
@@ -449,7 +476,7 @@ func (m *Map) Set(key string, value any) error {
 
 	case *List:
 		if v.objId != nil {
-			return fmt.Errorf("automerge.Map#Set: cannot move an existing *automerge.List")
+			return fmt.Errorf("automerge.Map: tried to move an existing *automerge.List")
 		}
 
 		objId, err := call[*objId](C.AMmapPutObject(cDoc, cObj, cstr, C.AM_OBJ_TYPE_LIST))
@@ -461,7 +488,7 @@ func (m *Map) Set(key string, value any) error {
 
 	case *Counter:
 		if v.m != nil || v.l != nil {
-			return fmt.Errorf("automerge.Map#Set: cannot move an existing *automerge.Counter")
+			return fmt.Errorf("automerge.Map: tried to move an existing *automerge.Counter")
 		}
 
 		_, err = call[*void](C.AMmapPutCounter(cDoc, cObj, cstr, C.longlong(v.val)))
@@ -472,7 +499,7 @@ func (m *Map) Set(key string, value any) error {
 
 	case *Text:
 		if v.objId != nil {
-			return fmt.Errorf("automerge.Map#Set: cannot move an existing *automerge.Text")
+			return fmt.Errorf("automerge.Map: tried to move an existing *automerge.Text")
 		}
 		objId, err := call[*objId](C.AMmapPutObject(cDoc, cObj, cstr, C.AM_OBJ_TYPE_TEXT))
 		if err != nil {
@@ -481,13 +508,15 @@ func (m *Map) Set(key string, value any) error {
 		v.doc = m.doc
 		v.objId = objId
 		unlock()
-		err = v.Reset(v.val)
+		if err = v.Set(v.val); err != nil {
+			return err
+		}
 
 	case *void:
 		_, err = call[*void](C.AMmapDelete(cDoc, cObj, cstr))
 
 	default:
-		err = fmt.Errorf("automerge.Map#Set: unsupported value %#v of type %#T", value, value)
+		err = fmt.Errorf("automerge.Map: tried to write unsupported value %#v", value)
 	}
 
 	return err
@@ -505,7 +534,7 @@ func (m *Map) Del(key string) error {
 func (m *Map) Get(key string) (*Value, error) {
 	if m.objId == nil {
 		if m.path == nil {
-			return nil, fmt.Errorf("automerge.Map#Get called on detached Map")
+			return nil, fmt.Errorf("automerge.Map: tried to read detached map")
 		}
 		return m.path.Path(key).Get()
 	}
@@ -517,7 +546,7 @@ func (m *Map) Get(key string) (*Value, error) {
 
 	r := C.AMmapGet(cDoc, cObj, cstr, nil)
 	unlock()
-	v, err := callValue(m.doc, r)
+	v, err := createValue(m.doc, r)
 	if err == nil && v.Kind() == KindCounter {
 		c := v.Counter()
 		c.m = m
@@ -551,10 +580,12 @@ func (m *Map) load() (map[string]any, error) {
 	return ret, nil
 }
 
+// Iter returns a MapItems to let you iterate over the contents of the Map.
+// You must check for errors by calling [MapItems.Error]
 func (m *Map) Iter() *MapItems {
 	if m.objId == nil {
 		if m.path == nil {
-			return &MapItems{err: fmt.Errorf("automerge.Map#Iter called on detached Map")}
+			return &MapItems{err: fmt.Errorf("automerge.Map: tried to read detached map")}
 		}
 		v, err := m.path.Get()
 		if err != nil {
@@ -565,7 +596,7 @@ func (m *Map) Iter() *MapItems {
 		} else if v.Kind() == KindVoid {
 			return &MapItems{}
 		}
-		return &MapItems{err: fmt.Errorf("%#p: cannot interate over non-map %v", m.path, v)}
+		return &MapItems{err: fmt.Errorf("%#v: tried to interate over non-map %#v", m.path, v.val)}
 	}
 
 	cDoc, cObj, unlock := m.lock()
@@ -579,7 +610,47 @@ func (m *Map) Iter() *MapItems {
 	return iter
 }
 
-// MapItems iterates over the values in a Map
+// String returns a representation suitable for debugging.
+func (m *Map) String() string {
+	return m.GoString()
+}
+
+// GoString returns a representation suitable for debugging.
+func (m *Map) GoString() string {
+	iter := m.Iter()
+	sofar := "&automerge.Map{"
+	i := 0
+	for {
+		key, val, valid := iter.Next()
+		if !valid {
+			break
+		}
+		if i > 0 {
+			sofar += ", "
+		}
+		i++
+		sofar += fmt.Sprintf("%#v: ", key)
+		if val.Kind() == KindMap {
+			sofar += "&automerge.Map{...}"
+		} else if val.Kind() == KindList {
+			sofar += "&automerge.List{...}"
+		} else {
+			sofar += fmt.Sprintf("%#v", val.val)
+		}
+
+		if i >= 5 {
+			sofar += ", ..."
+			break
+		}
+	}
+
+	if err := iter.Error(); err != nil {
+		return "&automerge.Map{<error>}"
+	}
+	return sofar + "}"
+}
+
+// MapItems is an iterator over the contents of a Map
 type MapItems struct {
 	r *C.AMresult
 	v C.AMmapItems
@@ -615,6 +686,7 @@ func (mi *MapItems) Next() (string, *Value, bool) {
 	key := C.GoString(cKey)
 
 	// TODO: we should get the value from the mapItems instead to be concurrency safe.
+	// but this requires a bunch of duplication to get values from map items.
 	value, err := mi.m.Get(key)
 	if err != nil {
 		mi.err = err
@@ -624,8 +696,7 @@ func (mi *MapItems) Next() (string, *Value, bool) {
 	return key, value, true
 }
 
-// Error returns any error that happened when creating
-// or iterating over the map.
+// Error returns any error that occurred creating or using the iterator.
 func (mi *MapItems) Error() error {
 	return mi.err
 }
@@ -634,6 +705,12 @@ type List struct {
 	doc   *Doc
 	objId *objId
 	path  *Path
+}
+
+// NewList returns a detached list.
+// Before you can read from or write to it you must write it to the document.
+func NewList() *List {
+	return &List{}
 }
 
 func (l *List) lock() (*C.AMdoc, *C.AMobjId, func()) {
@@ -665,8 +742,13 @@ func (l *List) load() ([]any, error) {
 	return ret, nil
 }
 
+// Len returns the length of the list, or 0 on error
 func (l *List) Len() int {
 	if l.objId == nil {
+		if l.path == nil {
+			return 0
+		}
+
 		l, err := As[*List](l.path.Get())
 		if err != nil {
 			return 0
@@ -679,6 +761,8 @@ func (l *List) Len() int {
 	return int(C.AMobjSize(cDoc, cObj, nil))
 }
 
+// Iter returns a ListItems to let you iterate over the contents of the List.
+// You must check for errors by calling [ListItems.Error]
 func (l *List) Iter() *ListItems {
 	if l.objId == nil {
 		v, err := l.path.Get()
@@ -690,7 +774,7 @@ func (l *List) Iter() *ListItems {
 		} else if v.Kind() == KindVoid {
 			return &ListItems{}
 		}
-		return &ListItems{err: fmt.Errorf("%#p: cannot interate over non-list %v", l.path, v)}
+		return &ListItems{err: fmt.Errorf("%#v: tried to interate over non-list %#v", l.path, v.val)}
 	}
 
 	cDoc, cObj, unlock := l.lock()
@@ -704,18 +788,23 @@ func (l *List) Iter() *ListItems {
 	return iter
 }
 
+// Get returns the value at index i
 func (l *List) Get(i int) (*Value, error) {
 	if l.objId == nil {
 		return l.path.Path(i).Get()
 	}
-	defer runtime.KeepAlive(l)
+
+	// make lists act more like maps
+	if i >= l.Len() {
+		return &Value{kind: KindVoid}, nil
+	}
 
 	cDoc, cObj, unlock := l.lock()
 	defer unlock()
 
 	r := C.AMlistGet(cDoc, cObj, C.ulong(i), nil)
 	unlock()
-	v, err := callValue(l.doc, r)
+	v, err := createValue(l.doc, r)
 	if err != nil {
 		return nil, err
 	}
@@ -727,8 +816,9 @@ func (l *List) Get(i int) (*Value, error) {
 	return v, nil
 }
 
-func (l *List) Append(value ...any) error {
-	for _, v := range value {
+// Append adds the values at the end of the list.
+func (l *List) Append(values ...any) error {
+	for _, v := range values {
 		if err := l.put(C.SIZE_MAX, true, v); err != nil {
 			return err
 		}
@@ -736,17 +826,18 @@ func (l *List) Append(value ...any) error {
 	return nil
 }
 
+// Set overwrites the value at l[idx] with value.
 func (l *List) Set(idx int, value any) error {
 	if idx < 0 || idx >= l.Len() {
-		return fmt.Errorf("automerge: List.Set index %v out of bounds (list.Len() == %v", idx, l.Len())
-		panic("list index must be > 0")
+		return fmt.Errorf("automerge.List: tried to write index %v beyond end of list length %v", idx, l.Len())
 	}
 	return l.put(C.ulong(idx), false, value)
 }
 
+// Insert inserts the new values just before idx.
 func (l *List) Insert(idx int, value ...any) error {
-	if idx < 0 || idx >= l.Len() {
-		return fmt.Errorf("automerge: List.Insert index %v out of bounds (list.Len() == %v", idx, l.Len())
+	if idx < 0 || idx > l.Len() {
+		return fmt.Errorf("automerge.List: tried to write index %v beyond end of list length %v", idx, l.Len())
 	}
 	for i, v := range value {
 		if err := l.put(C.ulong(idx+i), true, v); err != nil {
@@ -756,8 +847,59 @@ func (l *List) Insert(idx int, value ...any) error {
 	return nil
 }
 
+// Delete removes the value at idx and shortens the list.
+func (l *List) Delete(idx int) error {
+	if idx < 0 || idx >= l.Len() {
+		return fmt.Errorf("automerge.List: tried to write index %v beyond end of list length %v", idx, l.Len())
+	}
+
+	cDoc, cObj, unlock := l.lock()
+	defer unlock()
+
+	_, err := call[*void](C.AMlistDelete(cDoc, cObj, C.ulong(idx)))
+	return err
+
+}
+
+// GoString returns a representation suitable for debugging.
+func (l *List) GoString() string {
+	iter := l.Iter()
+	sofar := "&automerge.List{"
+	i := 0
+	for {
+		_, val, valid := iter.Next()
+		if !valid {
+			break
+		}
+		if i > 0 {
+			sofar += ", "
+		}
+		i++
+		if val.Kind() == KindMap {
+			sofar += "&automerge.Map{...}"
+		} else if val.Kind() == KindList {
+			sofar += "&automerge.List{...}"
+		} else {
+			sofar += fmt.Sprintf("%#v", val.val)
+		}
+
+		if i >= 5 {
+			sofar += ", ..."
+			break
+		}
+	}
+
+	if err := iter.Error(); err != nil {
+		return "&automerge.List{<error>}"
+	}
+	return sofar + "}"
+}
+
 func (l *List) put(i C.ulong, before bool, value any) error {
 	if l.objId == nil {
+		if l.path == nil {
+			return fmt.Errorf("automerge.List: tried to write to detached list")
+		}
 		l2, err := l.path.ensureList(int(i))
 		if err != nil {
 			return err
@@ -810,11 +952,7 @@ func (l *List) put(i C.ulong, before bool, value any) error {
 		}
 		unlock()
 		list := &List{doc: l.doc, objId: objId}
-		for idx, item := range v {
-			if err := list.Set(idx, item); err != nil {
-				return err
-			}
-		}
+		return list.Append(v...)
 
 	case map[string]any:
 		objId, err := call[*objId](C.AMlistPutObject(cDoc, cObj, i, C.bool(before), C.AM_OBJ_TYPE_MAP))
@@ -831,6 +969,10 @@ func (l *List) put(i C.ulong, before bool, value any) error {
 		}
 
 	case *Counter:
+		if v.m != nil || v.l != nil {
+			return fmt.Errorf("automerge.List: tried to move an attached *automerge.Text")
+		}
+
 		_, err = call[*void](C.AMlistPutCounter(cDoc, cObj, i, C.bool(before), C.longlong(v.val)))
 		if err == nil {
 			v.l = l
@@ -839,7 +981,7 @@ func (l *List) put(i C.ulong, before bool, value any) error {
 
 	case *Text:
 		if v.objId != nil {
-			return fmt.Errorf("automerge.List: cannot move an attached *automerge.Text")
+			return fmt.Errorf("automerge.List: tried to move an attached *automerge.Text")
 		}
 		objId, err := call[*objId](C.AMlistPutObject(cDoc, cObj, i, C.bool(before), C.AM_OBJ_TYPE_TEXT))
 		if err != nil {
@@ -847,11 +989,14 @@ func (l *List) put(i C.ulong, before bool, value any) error {
 		}
 		v.doc = l.doc
 		v.objId = objId
-		err = v.Reset(v.val)
+		unlock()
+		if err := v.Set(v.val); err != nil {
+			return err
+		}
 
 	case *Map:
 		if v.objId != nil {
-			return fmt.Errorf("automerge.List: cannot move an attached *automerge.Map")
+			return fmt.Errorf("automerge.List: tried to move an attached *automerge.Map")
 		}
 		objId, err := call[*objId](C.AMlistPutObject(cDoc, cObj, i, C.bool(before), C.AM_OBJ_TYPE_MAP))
 		if err != nil {
@@ -862,7 +1007,7 @@ func (l *List) put(i C.ulong, before bool, value any) error {
 
 	case *List:
 		if v.objId != nil {
-			return fmt.Errorf("automerge.List: cannot move an attached *automerge.List")
+			return fmt.Errorf("automerge.List: tried to move an attached *automerge.List")
 		}
 		objId, err := call[*objId](C.AMlistPutObject(cDoc, cObj, i, C.bool(before), C.AM_OBJ_TYPE_LIST))
 		if err != nil {
@@ -872,12 +1017,13 @@ func (l *List) put(i C.ulong, before bool, value any) error {
 		v.objId = objId
 
 	default:
-		err = fmt.Errorf("automerge: unsupported %#v of type %T", value, value)
+		err = fmt.Errorf("automerge.List: tried to write unsupported value %#v", value)
 	}
 
 	return err
 }
 
+// ListItems is an iterator over the contents of a List
 type ListItems struct {
 	r *C.AMresult
 	v C.AMlistItems
@@ -896,6 +1042,8 @@ func (li *ListItems) init(r *C.AMresult) error {
 	return nil
 }
 
+// Next returns either the next index and value and true
+// or 0, nil, false to indicate that there are no more items
 func (li *ListItems) Next() (int, *Value, bool) {
 	if li.err != nil {
 		return 0, nil, false
@@ -918,10 +1066,13 @@ func (li *ListItems) Next() (int, *Value, bool) {
 	return int(idx), value, true
 }
 
+// Error returns any error that occurred creating or using the iterator.
 func (li *ListItems) Error() error {
 	return li.err
 }
 
+// Counter is a mutable int64 that collaborators
+// can increment or decrement.
 type Counter struct {
 	val int64
 
@@ -933,10 +1084,13 @@ type Counter struct {
 	idx int
 }
 
+// NewCounter returns a detached counter with the given starting value.
+// Before you can Get() or Inc() you must write it to the document.
 func NewCounter(v int64) *Counter {
 	return &Counter{val: v}
 }
 
+// Get returns the current value of the counter.
 func (c *Counter) Get() (int64, error) {
 	var v *Value
 	var err error
@@ -947,22 +1101,27 @@ func (c *Counter) Get() (int64, error) {
 	} else if c.path != nil {
 		v, err = c.path.Get()
 	} else {
-		return 0, fmt.Errorf("automerge.Counter#Get called on detached counter")
+		return 0, fmt.Errorf("automerge.Counter: tried to read from detached counter")
 	}
 	if err != nil {
 		return 0, err
 	}
 
-	if v.Kind() != KindCounter {
-		return 0, fmt.Errorf("automerge.Counter#Get called on non-counter %#v of type %T", v.val, v.val)
+	if v.Kind() == KindVoid {
+		return 0, nil
 	}
-	return v.Counter().val, nil
+	if v.Kind() == KindCounter {
+		return v.Counter().val, nil
+	}
+
+	return 0, fmt.Errorf("automerge.Counter: tried to read non-counter %#v", v.val)
 }
 
-func (c *Counter) Inc(delta int) error {
+// Inc adjusts the counter by delta.
+func (c *Counter) Inc(delta int64) error {
 	if c.m == nil && c.l == nil {
 		if c.path == nil {
-			return fmt.Errorf("automerge.Counter#Inc called on detached counter")
+			return fmt.Errorf("automerge.Counter: tried to write to detached counter")
 		}
 
 		c2, err := c.path.ensureCounter()
@@ -990,18 +1149,16 @@ func (c *Counter) Inc(delta int) error {
 	return err
 }
 
-func (c *Counter) String() string {
-	return c.GoString()
-}
-
+// GoString returns a representation suitable for debugging.
 func (c *Counter) GoString() string {
 	v, err := c.Get()
 	if err != nil {
-		return fmt.Sprintf("&automerge.Counter(<error>)")
+		return "&automerge.Counter(<error>)"
 	}
 	return fmt.Sprintf("&automerge.Counter(%v)", v)
 }
 
+// Text is a mutable string that can be edited collaboratively
 type Text struct {
 	doc   *Doc
 	objId *objId
@@ -1015,20 +1172,46 @@ func (t *Text) lock() (*C.AMdoc, *C.AMobjId, func()) {
 	return cDoc, t.objId.v, unlock
 }
 
+// NewText returns a detached Text with the given starting value.
+// Before you can read or write it you must write it to the document.
 func NewText(s string) *Text {
 	return &Text{val: s}
 }
 
+func (t *Text) Len() int {
+	if t.objId == nil {
+		if t.path == nil {
+			return 0
+		}
+		l, err := As[*Text](t.path.Get())
+		if err != nil {
+			return 0
+		}
+		return l.Len()
+	}
+
+	cDoc, cObj, unlock := t.lock()
+	defer unlock()
+	return int(C.AMobjSize(cDoc, cObj, nil))
+}
+
+// Get returns the current value as a string
 func (t *Text) Get() (string, error) {
 	if t.objId == nil {
 		if t.path == nil {
-			return "", fmt.Errorf("automerge.Text: cannot Get detached text")
+			return "", fmt.Errorf("automerge.Text: tried to read detached text")
 		}
-		t, err := As[*Text](t.path.Get())
+		v, err := t.path.Get()
 		if err != nil {
 			return "", err
 		}
-		return t.Get()
+		if v.Kind() == KindVoid {
+			return "", nil
+		}
+		if v.Kind() == KindText {
+			return v.Text().Get()
+		}
+		return "", fmt.Errorf("automerge.Text: tried to read non-text value %#v", v.val)
 	}
 
 	cDoc, cObj, unlock := t.lock()
@@ -1041,22 +1224,30 @@ func (t *Text) Get() (string, error) {
 	return us.val, nil
 }
 
-func (t *Text) Reset(s string) error {
+// Set overwrites the entire string with a new value,
+// prefer to use Insert/Del/Append/Splice as appropriate
+// to make collaborative editing easier.
+func (t *Text) Set(s string) error {
 	return t.splice(0, C.SIZE_MAX, s)
 }
 
+// Insert adds a substr at position pos in the Text
 func (t *Text) Insert(pos int, s string) error {
 	return t.splice(C.ulong(pos), 0, s)
 }
 
-func (t *Text) Del(pos int, del int) error {
+// Insert deletes del characters from position pos
+func (t *Text) Delete(pos int, del int) error {
 	return t.splice(C.ulong(pos), C.ulong(del), "")
 }
 
+// Append adds substr s at the end of the string
 func (t *Text) Append(s string) error {
 	return t.splice(C.SIZE_MAX, 0, s)
 }
 
+// Splice deletes del characters at position pos, and inserts
+// substr s in their place.
 func (t *Text) Splice(pos int, del int, s string) error {
 	return t.splice(C.ulong(pos), C.ulong(del), s)
 }
@@ -1064,7 +1255,7 @@ func (t *Text) Splice(pos int, del int, s string) error {
 func (t *Text) splice(pos, del C.ulong, s string) error {
 	if t.objId == nil {
 		if t.path == nil {
-			return fmt.Errorf("automerge.Text edited while detached")
+			return fmt.Errorf("automerge.Text: tried to write to detached text")
 		}
 		t2, err := t.path.ensureText()
 		if err != nil {
@@ -1081,21 +1272,21 @@ func (t *Text) splice(pos, del C.ulong, s string) error {
 
 	_, err := call[*void](C.AMspliceText(cDoc, cObj, pos, del, cstr))
 	if err != nil {
-		return err
+		return fmt.Errorf("automerge.Text: failed to write: %w", err)
 	}
 	return nil
 }
 
-func (t *Text) String() string {
-	return t.GoString()
-}
-
+// GoString returns a representation suitable for debugging.
 func (t *Text) GoString() string {
+	if t.objId == nil && t.path == nil {
+		return fmt.Sprintf("&automerge.Text{%#v}", t.val)
+	}
 	v, err := t.Get()
 	if err != nil {
-		return fmt.Sprintf("&automerge.Text(<error>)")
+		return "&automerge.Text{<error>}"
 	}
-	return fmt.Sprintf("&automerge.Text(%#v)", v)
+	return fmt.Sprintf("&automerge.Text{%#v}", v)
 }
 
 type utf8String struct {
@@ -1111,17 +1302,25 @@ func (us *utf8String) init(r *C.AMresult) error {
 	return nil
 }
 
+// Value represents a dynamically typed value read from a document.
+// It can hold any of the supported primative types (bool, string, []byte, float64, int64, uint64, time.Time)
+// the four mutable types (*Map, *List, *Text, *Counter), or it can be an explicit null,
+// or a void to indicate that no value existed at all.
+// You can convert from a Value to a go type using [As], or call accessor methods directly.
 type Value struct {
 	kind Kind
 	val  any
 }
 
+// init() takes responsibility for freeing r
 func (v *Value) init(d *Doc, r *C.AMresult) error {
 	tag := C.AMresultValueTag(r)
 
 	if tag == C.AM_VALUE_OBJ_ID {
 		return v.initObjId(d, r)
 	}
+
+	defer C.AMfree(r)
 
 	v.kind = Kind(tag)
 	switch v.kind {
@@ -1141,10 +1340,10 @@ func (v *Value) init(d *Doc, r *C.AMresult) error {
 	case KindFloat64:
 		v.val = float64(C.AMresultValueF64(r))
 
-	case KindInt:
+	case KindInt64:
 		v.val = int64(C.AMresultValueInt(r))
 
-	case KindUint:
+	case KindUint64:
 		v.val = uint64(C.AMresultValueInt(r))
 
 	case KindCounter:
@@ -1154,13 +1353,13 @@ func (v *Value) init(d *Doc, r *C.AMresult) error {
 		v.val = time.UnixMilli(int64(C.AMresultValueTimestamp(r)))
 
 	default:
-		return fmt.Errorf("expected a bool/null/string/bytes/float/int/uint value, got %#v", v.kind)
+		return fmt.Errorf("automerge.Value: unsupported kind %#v", v.kind)
 	}
 
-	C.AMfree(r)
 	return nil
 }
 
+// initObjId takes responsibliity for freeing r.
 func (v *Value) initObjId(d *Doc, r *C.AMresult) error {
 	o := &objId{r: r, v: C.AMresultValueObjId(r)}
 	runtime.SetFinalizer(o, func(*objId) { C.AMfree(r) })
@@ -1178,9 +1377,8 @@ func (v *Value) initObjId(d *Doc, r *C.AMresult) error {
 	case C.AM_OBJ_TYPE_TEXT:
 		v.kind = KindText
 		v.val = &Text{doc: d, objId: o}
-
 	default:
-		return fmt.Errorf("expected a list/map, got %#v", C.AMobjObjType(d.cDoc, o.v))
+		return fmt.Errorf("automerge.Value: unsupported object type %#v", C.AMobjObjType(d.cDoc, o.v))
 	}
 
 	return nil
@@ -1202,17 +1400,20 @@ func (v *Value) goValue() (any, error) {
 	return v.val, nil
 }
 
+// Kind reports the kind of the value
 func (v *Value) Kind() Kind {
 	return v.kind
 }
 
+// List returns the value as a [*List], it panics if Kind() != KindList
 func (v *Value) List() *List {
 	if v.kind != KindList {
-		panic("automerge.Value#List called on non-list")
+		panic(fmt.Errorf("automerge.Value#List called on non-list: %#v", v))
 	}
 	return v.val.(*List)
 }
 
+// Map returns the value as a [*Map], it panics if Kind() != KindMap
 func (v *Value) Map() *Map {
 	if v.kind != KindMap {
 		panic(fmt.Errorf("automerge.Value#Map called on non-map: %#v", v))
@@ -1220,6 +1421,7 @@ func (v *Value) Map() *Map {
 	return v.val.(*Map)
 }
 
+// Counter returns the value as a [*Counter], it panics if Kind() != KindCounter
 func (v *Value) Counter() *Counter {
 	if v.kind != KindCounter {
 		panic(fmt.Errorf("automerge.Value#Counter called on non-counter: %#v", v))
@@ -1228,6 +1430,7 @@ func (v *Value) Counter() *Counter {
 	return v.val.(*Counter)
 }
 
+// Text returns the value as a [*Text], it panics if Kind() != KindText
 func (v *Value) Text() *Text {
 	if v.kind != KindText {
 		panic(fmt.Errorf("automerge.Value#Counter called on non-counter: %#v", v))
@@ -1236,6 +1439,7 @@ func (v *Value) Text() *Text {
 	return v.val.(*Text)
 }
 
+// Str returns the value as a string, it panics if Kind() != KindStr
 func (v *Value) Str() string {
 	if v.kind != KindStr {
 		panic(fmt.Errorf("automerge.Value#Str called on non-string: %#v", v))
@@ -1243,18 +1447,65 @@ func (v *Value) Str() string {
 	return v.val.(string)
 }
 
-func (v *Value) String() string {
-	return v.GoString()
+// Bytes returns the value as a string, it panics if Kind() != KindBytes
+func (v *Value) Bytes() []byte {
+	if v.kind != KindBytes {
+		panic(fmt.Errorf("automerge.Value#Bytes called on non-[]byte: %#v", v))
+	}
+	return v.val.([]byte)
 }
 
+// Bool returns the value as a bool, it panics if Kind() != KindBool
+func (v *Value) Bool() bool {
+	if v.kind != KindBool {
+		panic(fmt.Errorf("automerge.Value#Bool called on non-bool: %#v", v))
+	}
+	return v.val.(bool)
+}
+
+// Float64 returns the value as a float64, it panics if Kind() != KindFloat64
+func (v *Value) Float64() float64 {
+	if v.kind != KindFloat64 {
+		panic(fmt.Errorf("automerge.Value#Float64 called on non-float64: %#v", v))
+	}
+	return v.val.(float64)
+}
+
+// Int64 returns the value as a int64, it panics if Kind() != KindInt64
+func (v *Value) Int64() int64 {
+	if v.kind != KindInt64 {
+		panic(fmt.Errorf("automerge.Value#Int64 called on non-int64: %#v", v))
+	}
+	return v.val.(int64)
+}
+
+// Uint64 returns the value as a uint64, it panics if Kind() != KindUint64
+func (v *Value) Uint64() uint64 {
+	if v.kind != KindUint64 {
+		panic(fmt.Errorf("automerge.Value#Uint64 called on non-uint64: %#v", v))
+	}
+	return v.val.(uint64)
+}
+
+// Time returns the value as a time.Time, it panics if Kind() != KindTime
+func (v *Value) Time() time.Time {
+	if v.kind != KindTime {
+		panic(fmt.Errorf("automerge.Value#Time called on non-time: %#v", v))
+	}
+	return v.val.(time.Time)
+}
+
+// IsVoid returns true if the value did not exist in the document
 func (v *Value) IsVoid() bool {
 	return v.kind == KindVoid
 }
 
+// IsNull returns true if the value is null
 func (v *Value) IsNull() bool {
 	return v.kind == KindNull
 }
 
+// GoString returns a representation suitable for debugging.
 func (v *Value) GoString() string {
 	if v.kind == KindVoid {
 		return "&automerge.Value(<void>)"
@@ -1266,24 +1517,26 @@ type initer interface {
 	init(r *C.AMresult) error
 }
 
-func callValue(d *Doc, r *C.AMresult) (ret *Value, err error) {
+func createValue(d *Doc, r *C.AMresult) (*Value, error) {
 	switch C.AMresultStatus(r) {
 	case C.AM_STATUS_OK:
-		ret = new(Value)
-		err = ret.init(d, r)
+		ret := new(Value)
+		err := ret.init(d, r)
+		if err != nil {
+			return nil, err
+		}
+		return ret, nil
 	case C.AM_STATUS_ERROR:
-		err = fmt.Errorf(C.GoString(C.AMerrorMessage(r)))
-	case C.AM_STATUS_INVALID_RESULT:
-		err = fmt.Errorf("automerge: invalid result")
-	default:
-		err = fmt.Errorf("automerge: invalid result status")
-	}
-
-	if err != nil {
+		msg := C.GoString(C.AMerrorMessage(r))
 		C.AMfree(r)
-		return nil, err
+		return nil, fmt.Errorf(msg)
+	case C.AM_STATUS_INVALID_RESULT:
+		C.AMfree(r)
+		return nil, fmt.Errorf("automerge: invalid result")
+	default:
+		C.AMfree(r)
+		return nil, fmt.Errorf("automerge: invalid result status")
 	}
-	return ret, nil
 }
 
 func call[T interface {
@@ -1295,7 +1548,8 @@ func call[T interface {
 		ret = T(new(X))
 		err = ret.init(r)
 	case C.AM_STATUS_ERROR:
-		err = fmt.Errorf(C.GoString(C.AMerrorMessage(r)))
+		msg := C.GoString(C.AMerrorMessage(r))
+		err = fmt.Errorf(msg)
 	case C.AM_STATUS_INVALID_RESULT:
 		err = fmt.Errorf("automerge: invalid result")
 	default:
@@ -1309,35 +1563,4 @@ func call[T interface {
 
 	runtime.SetFinalizer(ret, func(ret T) { C.AMfree(r) })
 	return ret, nil
-}
-
-func TestNullByte(b []byte) {
-	result := C.AMload((*C.uchar)(unsafe.Pointer(&b[0])), (C.ulong)(len(b)))
-
-	if s := C.AMresultStatus(result); s != C.AM_STATUS_OK {
-		fmt.Println("got incorrect status: ", s)
-		return
-	}
-
-	doc := C.AMresultValueDoc(result)
-
-	cstr := C.CString("oops")
-
-	result = C.AMmapGet(doc, (*C.AMobjId)(C.AM_ROOT), cstr, nil)
-
-	if s := C.AMresultStatus(result); s != C.AM_STATUS_OK {
-		fmt.Println("got incorrect status 2: ", s)
-		return
-	}
-
-	err := C.GoString(C.AMerrorMessage(result))
-	fmt.Println("GOT ERR", err)
-
-	return
-
-	tag := C.AMresultValueTag(result)
-	fmt.Println(tag)
-
-	fmt.Println("SUCCESS")
-
 }

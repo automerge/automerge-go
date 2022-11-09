@@ -25,7 +25,7 @@ func (p *Path) Path(path ...any) *Path {
 
 // Get returns the value at a given path
 func (p *Path) Get() (*Value, error) {
-	obj := p.d.Get()
+	obj := p.d.RootValue()
 	var err error
 
 	for _, i := range p.path {
@@ -35,7 +35,7 @@ func (p *Path) Get() (*Value, error) {
 				return obj, nil
 			}
 			if obj.Kind() != KindMap {
-				return nil, fmt.Errorf("%#v: tried to access property %#v of non-map %#v", p, idx, obj)
+				return nil, fmt.Errorf("%#v: tried to read property %#v of non-map %#v", p, idx, obj.val)
 			}
 			obj, err = obj.Map().Get(idx)
 			if err != nil {
@@ -47,7 +47,7 @@ func (p *Path) Get() (*Value, error) {
 				return obj, nil
 			}
 			if obj.Kind() != KindList {
-				return nil, fmt.Errorf("%#v: tried to access index %#v of non-list %#v", p, idx, obj)
+				return nil, fmt.Errorf("%#v: tried to read index %#v of non-list %#v", p, idx, obj.val)
 			}
 			obj, err = obj.List().Get(idx)
 
@@ -62,23 +62,17 @@ func (p *Path) Get() (*Value, error) {
 	return obj, nil
 }
 
-func (p *Path) Put(v any) error {
-	if len(p.path) == 0 {
-		panic(fmt.Errorf("automerge: Path.Set called on path to Root()"))
-	}
-
+// Set sets the value at the given path, and creates any missing parent
+// Maps or Lists needed.
+func (p *Path) Set(v any) error {
 	_, set, err := p.ensure()
 	if err != nil {
 		return err
 	}
-	return set(v)
-}
-
-func (p *Path) Parent() *Path {
-	if len(p.path) == 0 {
-		panic(fmt.Errorf("automerge: Path.Parent called on path to Root()"))
+	if err := set(v); err != nil {
+		return err
 	}
-	return &Path{d: p.d, path: p.path[0 : len(p.path)-1]}
+	return nil
 }
 
 func (p *Path) ensureMap(debugKey string) (*Map, error) {
@@ -103,39 +97,31 @@ func (p *Path) ensureMap(debugKey string) (*Map, error) {
 		return v.Map(), nil
 	}
 
-	return nil, fmt.Errorf("%#v: tried to write to key %v of non-map %#v", p, debugKey, v)
+	return nil, fmt.Errorf("%#v: tried to write property %#v of non-map %#v", p, debugKey, v.val)
 }
 
 func (p *Path) ensureList(debugKey int) (*List, error) {
-	if len(p.path) == 0 {
-		return nil, fmt.Errorf("%#v: tried to write index %#v of non-list %#v", p, debugKey, p.d.Get())
-	}
-
 	v, set, err := p.ensure()
 	if err != nil {
 		return nil, err
 	}
 
 	if v.Kind() == KindVoid {
-		t := NewList()
-		if err := set(t); err != nil {
+		l := NewList()
+		if err := set(l); err != nil {
 			return nil, err
 		}
-		return t, nil
+		return l, nil
 	}
 
 	if v.Kind() == KindList {
 		return v.List(), nil
 	}
 
-	return nil, fmt.Errorf("%#v: tried to write to index %v of non-list %#v", p, p.path[len(p.path)-1], v)
+	return nil, fmt.Errorf("%#v: tried to write index %v of non-list %#v", p, debugKey, v.val)
 }
 
 func (p *Path) ensureText() (*Text, error) {
-	if len(p.path) == 0 {
-		return nil, fmt.Errorf("%#v: tried to edit non-text %#v", p, p.d.Get())
-	}
-
 	v, set, err := p.ensure()
 	if err != nil {
 		return nil, err
@@ -157,10 +143,6 @@ func (p *Path) ensureText() (*Text, error) {
 }
 
 func (p *Path) ensureCounter() (*Counter, error) {
-	if len(p.path) == 0 {
-		return nil, fmt.Errorf("%#v: tried to increment non-counter %#v", p, p.d.Get())
-	}
-
 	v, set, err := p.ensure()
 	if err != nil {
 		return nil, err
@@ -183,10 +165,16 @@ func (p *Path) ensureCounter() (*Counter, error) {
 }
 
 func (p *Path) ensure() (*Value, func(v any) error, error) {
+	if len(p.path) == 0 {
+		return p.d.RootValue(), func(v any) error {
+			return fmt.Errorf("%#v: tried to overwrite root of document", p)
+		}, nil
+	}
 	last := p.path[len(p.path)-1]
+	parent := &Path{d: p.d, path: p.path[0 : len(p.path)-1]}
 	switch key := last.(type) {
 	case string:
-		m, err := p.Parent().ensureMap(key)
+		m, err := parent.ensureMap(key)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -196,28 +184,31 @@ func (p *Path) ensure() (*Value, func(v any) error, error) {
 		}, err
 
 	case int:
-		l, err := p.Parent().ensureList(key)
+		l, err := parent.ensureList(key)
 		if err != nil {
 			return nil, nil, err
 		}
 
-		if key > l.Len() {
-			return nil, nil, fmt.Errorf("%#p: index %v out of bounds (list.Len() == %v", p, key, l.Len())
-		}
 		v, err := l.Get(key)
+		if err != nil {
+			return nil, nil, err
+		}
 		return v, func(v any) error {
+			if key > l.Len() {
+				return fmt.Errorf("%#v: tried to write index %v beyond end of list length %v", p, key, l.Len())
+			}
 			if key == l.Len() {
 				return l.Append(v)
 			}
 			return l.Set(key, v)
-		}, err
+		}, nil
 
 	default:
 		panic("unreachable")
 	}
 }
 
-// Map assumes there is a map at the given path.
+// Map assumes there is a [Map] at the given path.
 // Calling methods on the map will error if the path cannot be traversed
 // or if the value at this path is not a map.
 // If there is a void at this location, writing to this map
@@ -226,7 +217,7 @@ func (p *Path) Map() *Map {
 	return &Map{doc: p.d, path: p}
 }
 
-// List assumes there is a list at the given path.
+// List assumes there is a [List] at the given path.
 // Calling methods on the list will error if the path cannot be traversed
 // or if the value at this path is not a list.
 // If there is a void at this location, reading from the list will return void,
@@ -235,27 +226,33 @@ func (p *Path) List() *List {
 	return &List{doc: p.d, path: p}
 }
 
-// Counter assumes there is a counter at the given path.
+// Counter assumes there is a [Counter] at the given path.
 // Calling methods on the counter will error if the path cannot be traversed
 // or if the value at this path is not a counter.
 func (p *Path) Counter() *Counter {
 	return &Counter{path: p}
 }
 
-// Counter assumes there is a counter at the given path.
+// Text assumes there is a [Text] at the given path.
 // Calling methods on the counter will error if the path cannot be traversed
 // or if the value at this path is not a counter.
 func (p *Path) Text() *Text {
 	return &Text{doc: p.d, path: p}
 }
 
+// String returns a representation suitable for debugging.
+func (p *Path) String() string {
+	return p.GoString()
+}
+
+// GoString returns a representation suitable for debugging
 func (p *Path) GoString() string {
-	str := "&automerge.Path("
+	str := "&automerge.Path{"
 	for i, p := range p.path {
 		if i > 0 {
 			str += ", "
 		}
 		str += fmt.Sprintf("%#v", p)
 	}
-	return str + ")"
+	return str + "}"
 }

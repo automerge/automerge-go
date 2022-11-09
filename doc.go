@@ -1,25 +1,42 @@
 /*
-Package automerge provides the ability to interact with automerge documents.
-It is a featureful wrapper around automerge-rs that uses Cgo to avoid reimplementing
+Package automerge provides the ability to interact with [automerge] documents.
+It is a featureful wrapper around [automerge-rs] that uses cgo to avoid reimplementing
 the core engine from scratch.
 
+# Document Structure and Types
+
 Automerge documents have a JSON-like structure, they consist of a root map which
-has string keys, and values may have any of the primative types:
+has string keys, and values of any supported types.
 
-* bool, string, []byte, float64, (untyped) nil, int64, uint64, time.Time
+Supported types include several immutable primitive types:
 
-Additionally values may have any of the four special automerge types:
+  - bool
+  - string, []byte
+  - float64, int64, uint64
+  - time.Time (in millisecond precision)
+  - nil (untyped)
 
-* Map - a mutable map[string]any
-* List - a mutable []any
-* Text – a mutable string
-* Counter – a mutable int64
+And four mutable automerge types:
 
-Trying to access a value that is not set will return a Value with KindVoid
+  - [Map] - a mutable map[string]any
+  - [List] - a mutable []any
+  - [Text] – a mutable string
+  - [Counter] – an int64 that is incremented (instead of overwritten) by collaborators
 
-Automerge-go will convert your go value to the most appropriate type if
-possible, and error if not. For example structs are maps are converted to
-*automerge.Map, slices and arrays to *List, int, int32 are converted to float64
+If you read part of the doc that has no value set, automerge-go will return a
+Value with Kind() == KindVoid. You cannot create such a Value directly or write
+one to the document.
+
+On write automerge-go will attempt to convert provided values to the most
+appropriate type, and error if that is not possible.  For example structs are
+maps are converted to [*Map], slices and arrays to [*List], most numeric types
+are converted to float64 (the default number type for automerge), with the
+exception of int64 and uint64.
+
+On read automerge-go will return a [*Value], and you can use [As] to convert this
+to a more useful type.
+
+# Interacting with the Document
 
 Depending on your use-case there are a few ways to interact with the document,
 the recommended approach for reading is to cast the document to a go value:
@@ -27,34 +44,52 @@ the recommended approach for reading is to cast the document to a go value:
 	doc, err := automerge.Load(bytes)
 	if err != nil { return err }
 
-	myVal, err := automerge.As[*myType](doc.Get())
+	myVal, err := automerge.As[*myType](doc.RootValue())
 	if err != nil { return err }
 
-If you wish to access data from within the document, or modify data, the best
-way is to use a path:
+If you wish to modify the document, or access just a subset, use a Path:
 
-	err := doc.Path("x", "y", 0).Set(6)
-	v, err := automerge.As[int](doc.Path("x", "y", 0).Get())
+	err := doc.Path("x", "y", 0).Set(&myStruct{Header: "h"})
+	v, err := automerge.As[*myStruct](doc.Path("x", "y", 0).Get())
 
-The automerge types have additional methods (beyond just "Get" and "Set"). You
-can get access to an automerge type either by casting the value explicitly:
+It is always recommended to write the smallest change to the document, as this
+will improve the experience of other collaborative editors.
 
-	map, err := automerge.As[*automerge.Map](doc.Path("x").Get())
-	iter := map.Iter()
+Writing to a path will create any intermediate Map or List objects needed,
+Reading from a path will not, but may return a void Value if the intermediate
+objects don't exist.
 
-Or for convenience, by directly using the path. When you use this approach
-automerge-go will create the object (if it doesn't exist already) the first time
-you write to it. Read-only methods will not modify the document, but may fail
-if the value referenced by the path doesn't have the correct type, or return void to
-indicate that the path you're accessing does not exist in the document.
+The automerge mutable types have additional methods. You can access these
+methods by calling [Path.Map], [Path.List], [Path.Text] or [Path.Counter] which
+assume the path is of the type you say it is:
 
 	iter := doc.Path("collection").Map().Iter()
 	for {
 		k, v, valid := iter.Next()
-		if !valid { break }
+		if !valid {
+			break
+		}
+		fmt.Println(k, v)
 	}
 	if err := iter.Error(); err != nil {
 		return err
 	}
+
+When you do this, any errors caused by traversing the path will be returned from
+methods called on the returned objects.
+
+# Syncing and concurrency
+
+You can access methods on [*Doc] from multiple goroutines and access is mediated
+appropriately. For other types, you must provide your own syncronization, or
+only use them from one goroutine at a time.
+
+If you retain a Map, List, Counter, or Text object while the document is being
+modified concurrently be aware that its value may change, or it may be deleted
+from the document. A safer pattern is to fork the document, make the changes you
+want, and then merge your changes back into the document.
+
+[automerge]: https://automerge.org
+[automerge-rs]: https://github.com/automerge/automerge-rs
 */
 package automerge

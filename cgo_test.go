@@ -2,6 +2,7 @@ package automerge_test
 
 import (
 	"fmt"
+	"runtime"
 	"testing"
 	"time"
 
@@ -45,6 +46,10 @@ func TestActorId(t *testing.T) {
 	a2, err := doc.ActorId()
 	require.NoError(t, err)
 	require.Equal(t, a.String(), a2.String())
+	require.NoError(t, doc.SetActorId(f))
+	f2, err := doc.ActorId()
+	require.NoError(t, err)
+	require.Equal(t, f.String(), f2.String())
 }
 
 func TestDoc(t *testing.T) {
@@ -95,7 +100,7 @@ func TestDoc(t *testing.T) {
 	testGet(t, m, "time", time.UnixMilli(ts.UnixMilli()))
 	testGet(t, m, "bytes", []byte{1, 0, 2, 0, 3})
 	testGet(t, m, "slice", []any{"a", "b", "c"})
-	testGet(t, m, "map", map[string]any{"a": 1.0, "b": 2.0})
+	testGet(t, m, "map", map[string]any{"a": int64(1), "b": int64(2)})
 	testGet(t, m, "counter", 10)
 	testGet(t, m, "text", "hello world")
 
@@ -110,6 +115,49 @@ func TestDoc(t *testing.T) {
 	s, err = txt.Get()
 	require.NoError(t, err)
 	require.Equal(t, s, "hello world")
+}
+
+func TestDoc_Fork(t *testing.T) {
+	d, err := automerge.New(nil)
+	require.NoError(t, err)
+
+	require.NoError(t, d.Root().Set("x", 1))
+
+	ch, err := d.Commit("initial version")
+	require.NoError(t, err)
+
+	ch2, err := d.Heads()
+	require.NoError(t, err)
+	require.Equal(t, 0, ch.Cmp(ch2))
+
+	require.NoError(t, d.Root().Set("x", 2))
+
+	d2, err := d.Fork(ch)
+	require.NoError(t, err)
+
+	v, err := automerge.As[int](d.Root().Get("x"))
+	require.NoError(t, err)
+	v2, err := automerge.As[int](d2.Root().Get("x"))
+	require.NoError(t, err)
+
+	require.Equal(t, v, 2)
+	require.Equal(t, v2, 1)
+}
+
+func TestDoc_Errors(t *testing.T) {
+	ai, err := automerge.ActorIdFromString("5a1aac51ffc84d6cb7b72c626b35f962")
+	require.NoError(t, err)
+	d, err := automerge.New(ai)
+	require.NoError(t, err)
+
+	d2, err := automerge.New(ai)
+	require.NoError(t, err)
+
+	require.NoError(t, d.Root().Set("x", map[string]any{"x": 1}))
+	require.NoError(t, d2.Root().Set("y", map[string]any{"y": 1}))
+
+	_, err = d.Merge(d2)
+	require.EqualError(t, err, "duplicate seq 1 found for actor 5a1aac51ffc84d6cb7b72c626b35f962")
 }
 
 func testGet[T any](t *testing.T, m *automerge.Map, k string, v T) {
@@ -133,12 +181,15 @@ func TestMap(t *testing.T) {
 	require.NoError(t, m.Set("bool", true))
 	require.NoError(t, m.Set("string", "hello"))
 	require.NoError(t, m.Set("bytes", []byte{10, 0, 10, 0, 10}))
-	require.NoError(t, m.Set("int", 4))
-	require.NoError(t, m.Set("uint", uint(4)))
+	require.NoError(t, m.Set("int", int64(4)))
+	require.NoError(t, m.Set("uint", uint64(4)))
 	require.NoError(t, m.Set("float", 3.14))
 	require.NoError(t, m.Set("time", now))
+	require.NoError(t, m.Set("null", nil))
 	require.NoError(t, m.Set("slice", []string{"a", "b", "c"}))
 	require.NoError(t, m.Set("map", map[string]int{"a": 1, "b": 2}))
+
+	require.Equal(t, "&automerge.Map{\"bool\": true, \"bytes\": []byte{0xa, 0x0, 0xa, 0x0, 0xa}, \"float\": 3.14, \"int\": 4, \"map\": &automerge.Map{...}, ...}", m.GoString())
 
 	testGet(t, m, "bool", true)
 	testGet(t, m, "string", "hello")
@@ -147,6 +198,7 @@ func TestMap(t *testing.T) {
 	testGet[uint](t, m, "uint", 4)
 	testGet(t, m, "float", 3.14)
 	testGet(t, m, "time", now)
+	testGet[any](t, m, "null", nil)
 	testGet(t, m, "slice", []string{"a", "b", "c"})
 	testGet(t, m, "map", map[string]int{"a": 1, "b": 2})
 
@@ -180,6 +232,8 @@ func TestMap_Path(t *testing.T) {
 
 	err = doc.Path("x").Map().Set("y", true)
 	require.NoError(t, err)
+	err = doc.Path("x").Map().Set("z", true)
+	require.NoError(t, err)
 
 	b, err := automerge.As[bool](doc.Path("x").Map().Get("y"))
 	require.NoError(t, err)
@@ -191,6 +245,198 @@ func TestMap_Path(t *testing.T) {
 	b, err = automerge.As[bool](doc.Path("y", 0).Map().Get("y"))
 	require.NoError(t, err)
 	require.True(t, b)
+
+	iter := doc.Path("y", 0).Map().Iter()
+	for {
+		k, v, valid := iter.Next()
+		if !valid {
+			break
+		}
+		require.Equal(t, "y", k)
+		require.Equal(t, true, v.Bool())
+
+	}
+	require.NoError(t, iter.Error())
+
+	_, _, valid := iter.Next()
+	require.False(t, valid)
+	require.NoError(t, iter.Error())
+
+	iter = doc.Path("y").Map().Iter()
+	for {
+		_, _, valid := iter.Next()
+		if !valid {
+			break
+		}
+		t.Fatalf("expected no valid iterations")
+	}
+	require.EqualError(t, iter.Error(), "&automerge.Path{\"y\"}: tried to interate over non-map &automerge.List{&automerge.Map{...}}")
+}
+
+func TestList(t *testing.T) {
+	doc, err := automerge.New(nil)
+	require.NoError(t, err)
+
+	l := automerge.NewList()
+	require.NoError(t, doc.Root().Set("l", l))
+
+	require.NoError(t, l.Append("a", "b", "e"))
+	require.NoError(t, l.Insert(2, "d", "d", "d"))
+	require.NoError(t, l.Set(2, "c"))
+	require.NoError(t, l.Delete(3))
+
+	v, err := automerge.As[[]string](doc.Root().Get("l"))
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "b", "c", "d", "e"}, v)
+
+	require.EqualError(t, l.Set(10, "d"), "automerge.List: tried to write index 10 beyond end of list length 5")
+
+	require.NoError(t, l.Insert(5, "f"))
+
+	require.Equal(t, `&automerge.List{"a", "b", "c", "d", "e", ...}`, l.GoString())
+
+	m := automerge.NewList()
+	require.EqualError(t, m.Append(nil), "automerge.List: tried to write to detached list")
+	require.NoError(t, doc.Root().Set("m", m))
+
+	now := time.UnixMilli(time.Now().UnixMilli())
+
+	require.NoError(t, m.Append(nil))
+	require.NoError(t, m.Append(true))
+	require.NoError(t, m.Append(1))
+	require.NoError(t, m.Append(int64(2)))
+	require.NoError(t, m.Append(uint64(4611686018427387904)))
+	require.NoError(t, m.Append("hello"))
+	require.NoError(t, m.Append([]byte{0, 10, 0}))
+	require.NoError(t, m.Append(now))
+	require.NoError(t, m.Append([]string{"a", "b", "c"}))
+	require.NoError(t, m.Append(map[string]string{"🧟": "🛩"}))
+	require.NoError(t, m.Append(automerge.NewCounter(1)))
+	require.NoError(t, m.Append(automerge.NewText("a")))
+	require.NoError(t, m.Append(automerge.NewMap()))
+	require.NoError(t, m.Append(automerge.NewList()))
+
+	out, err := automerge.As[[]any](doc.Root().Get("m"))
+	require.Equal(t, []any{nil, true,
+		float64(1), int64(2), uint64(4611686018427387904),
+		"hello", []byte{0, 10, 0}, now,
+		[]any{"a", "b", "c"}, map[string]any{"🧟": "🛩"},
+		int64(1), "a", map[string]any{}, []any{}}, out)
+
+	bytes, err := doc.Save()
+	require.NoError(t, err)
+
+	doc, err = automerge.Load(bytes)
+	require.NoError(t, err)
+	val, err := doc.Root().Get("m")
+	require.NoError(t, err)
+	m = val.List()
+
+	mustGet := func(i int) *automerge.Value {
+		v, err := m.Get(i)
+		require.NoError(t, err)
+		return v
+	}
+	require.True(t, mustGet(0).IsNull())
+	require.True(t, mustGet(1).Bool())
+	require.Equal(t, 1.0, mustGet(2).Float64())
+	require.Equal(t, int64(2), mustGet(3).Int64())
+	require.Equal(t, uint64(4611686018427387904), mustGet(4).Uint64())
+	require.Equal(t, "hello", mustGet(5).Str())
+	require.Equal(t, []byte{0, 10, 0}, mustGet(6).Bytes())
+	require.Equal(t, now, mustGet(7).Time())
+
+	l = mustGet(8).List()
+	require.Equal(t, 3, l.Len())
+
+	mp := mustGet(9).Map()
+	s, err := automerge.As[string](mp.Get("🧟"))
+	require.NoError(t, err)
+	require.Equal(t, "🛩", s)
+
+	c := mustGet(10).Counter()
+	cnt, err := c.Get()
+	require.NoError(t, err)
+	require.Equal(t, int64(1), cnt)
+
+	txt := mustGet(11).Text()
+	s, err = txt.Get()
+	require.NoError(t, err)
+	require.Equal(t, "a", s)
+
+	mp = mustGet(12).Map()
+	require.Equal(t, 0, mp.Len())
+
+	l = mustGet(13).List()
+	require.Equal(t, 0, l.Len())
+
+	require.True(t, mustGet(14).IsVoid())
+
+	runtime.GC()
+	runtime.GC()
+}
+
+func TestList_Path(t *testing.T) {
+	doc, err := automerge.New(nil)
+	require.NoError(t, err)
+
+	err = doc.Path("y", 0).Set("a")
+	require.NoError(t, err)
+	err = doc.Path("y", 0).Set("b")
+	require.NoError(t, err)
+	b, err := automerge.As[string](doc.Path("y", 0).Get())
+	require.NoError(t, err)
+	require.Equal(t, "b", b)
+
+	err = doc.Path("z").List().Append("a")
+	require.NoError(t, err)
+	err = doc.Path("z").List().Append("b")
+	require.NoError(t, err)
+	b, err = automerge.As[string](doc.Path("z", 1).Get())
+	require.NoError(t, err)
+	require.Equal(t, "b", b)
+
+	b, err = automerge.As[string](doc.Path("z").List().Get(1))
+	require.NoError(t, err)
+	require.Equal(t, "b", b)
+
+	require.Equal(t, 2, doc.Path("z").List().Len())
+
+	i := doc.Path("y").List().Iter()
+	for {
+		i, v, valid := i.Next()
+		if !valid {
+			break
+		}
+		require.Equal(t, i, 0)
+		require.Equal(t, v.Str(), "b")
+	}
+
+	require.NoError(t, i.Error())
+
+	i = doc.Path("no").List().Iter()
+	for {
+		_, _, valid := i.Next()
+		if !valid {
+			break
+		}
+		t.Fatal("expected non-extant list to have no items")
+	}
+	require.NoError(t, i.Error())
+
+	i = doc.Path("y", 0).List().Iter()
+	for {
+		_, _, valid := i.Next()
+		if !valid {
+			break
+		}
+		t.Fatal("expected non-list to have no items")
+	}
+	require.EqualError(t, i.Error(), "&automerge.Path{\"y\", 0}: tried to interate over non-list \"b\"")
+
+	v, err := doc.Path("no", 3).Get()
+	require.NoError(t, err)
+	require.True(t, v.IsVoid())
 }
 
 func TestCounter(t *testing.T) {
@@ -202,16 +448,45 @@ func TestCounter(t *testing.T) {
 	require.NoError(t, c.Inc(-20))
 
 	b := automerge.NewCounter(5)
-	require.NoError(t, doc.Path("y", 0).Put(b))
+	require.NoError(t, doc.Path("y", 0).Set(b))
 	require.NoError(t, b.Inc(20))
 
 	v, err := automerge.As[int8](doc.Root().Get("x"))
+	require.Equal(t, int8(-10), v)
 	require.NoError(t, err)
-	fmt.Println("got", v)
 
 	v, err = automerge.As[int8](doc.Path("y", 0).Get())
+	require.Equal(t, int8(25), v)
 	require.NoError(t, err)
-	fmt.Println("got", v)
+
+	_, err = automerge.NewCounter(10).Get()
+	require.EqualError(t, err, "automerge.Counter: tried to read from detached counter")
+
+	err = automerge.NewCounter(0).Inc(10)
+	require.EqualError(t, err, "automerge.Counter: tried to write to detached counter")
+
+	require.NoError(t, doc.Root().Set("x", true))
+	_, err = c.Get()
+	require.EqualError(t, err, "automerge.Counter: tried to read non-counter true")
+}
+
+func TestCounter_Path(t *testing.T) {
+	doc, err := automerge.New(nil)
+	require.NoError(t, err)
+
+	require.NoError(t, doc.Path("c").Counter().Inc(10))
+	require.NoError(t, doc.Path("c").Counter().Inc(10))
+	v, err := automerge.As[int64](doc.Path("c").Get())
+	require.NoError(t, err)
+	require.Equal(t, int64(20), v)
+
+	v, err = doc.Path("b").Counter().Get()
+	require.NoError(t, err)
+	require.Equal(t, int64(0), v)
+
+	require.NoError(t, doc.Path("list").Set([]any{}))
+	err = doc.Path("list").Counter().Inc(10)
+	require.EqualError(t, err, "&automerge.Path{\"list\"}: tried to increment non-counter &automerge.List{}")
 }
 
 func TestText(t *testing.T) {
@@ -234,7 +509,46 @@ func TestText(t *testing.T) {
 	require.NoError(t, err)
 
 	v, err := automerge.As[string](doc.Root().Get("x"))
+	require.NoError(t, err)
 	require.Equal(t, "hello cool world!", v)
+
+	err = txt.Splice(100, 150, "test")
+	require.EqualError(t, err, "automerge.Text: failed to write: Invalid pos 100")
+
+	err = txt.Delete(6, 5)
+	require.NoError(t, err)
+	v, err = automerge.As[string](doc.Root().Get("x"))
+	require.NoError(t, err)
+	require.Equal(t, "hello world!", v)
+	require.Equal(t, 12, txt.Len())
+
+	require.Equal(t, "&automerge.Text{\"hello world!\"}", txt.GoString())
+}
+
+func TestText_Path(t *testing.T) {
+	doc, err := automerge.New(nil)
+	require.NoError(t, err)
+
+	require.NoError(t, doc.Path("text").Text().Set("hello world"))
+	require.NoError(t, doc.Path("text").Text().Append("!"))
+	require.Equal(t, 12, doc.Path("text").Text().Len())
+
+	s, err := doc.Path("text").Text().Get()
+	require.NoError(t, err)
+	require.Equal(t, "hello world!", s)
+
+	v, err := doc.Path("empty").Text().Get()
+	require.NoError(t, err)
+	require.Equal(t, "", v)
+
+	s, err = automerge.As[string](doc.Path("text").Get())
+	require.NoError(t, err)
+	require.Equal(t, "hello world!", s)
+
+	require.NoError(t, doc.Path("int").Set(10))
+	err = doc.Path("int").Text().Append("!")
+	require.EqualError(t, err, "&automerge.Path{\"int\"}: tried to edit non-text 10")
+
 }
 
 /*
