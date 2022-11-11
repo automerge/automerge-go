@@ -25,7 +25,7 @@ func (p *Path) Path(path ...any) *Path {
 
 // Get returns the value at a given path
 func (p *Path) Get() (*Value, error) {
-	obj := p.d.RootValue()
+	obj := p.d.Root()
 	var err error
 
 	for _, i := range p.path {
@@ -77,7 +77,7 @@ func (p *Path) Set(v any) error {
 
 func (p *Path) ensureMap(debugKey string) (*Map, error) {
 	if len(p.path) == 0 {
-		return p.d.Root(), nil
+		return p.d.RootMap(), nil
 	}
 
 	v, set, err := p.ensure()
@@ -166,7 +166,7 @@ func (p *Path) ensureCounter() (*Counter, error) {
 
 func (p *Path) ensure() (*Value, func(v any) error, error) {
 	if len(p.path) == 0 {
-		return p.d.RootValue(), func(v any) error {
+		return p.d.Root(), func(v any) error {
 			return fmt.Errorf("%#v: tried to overwrite root of document", p)
 		}, nil
 	}

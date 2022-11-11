@@ -8,14 +8,13 @@ import (
 )
 
 func TestPath_Errors(t *testing.T) {
-	doc, err := automerge.New(nil)
-	require.NoError(t, err)
+	doc := automerge.New(nil)
 
 	require.PanicsWithError(t, "automerge: invalid path segment, expected string or int, got: bool(true)", func() {
 		doc.Path(true)
 	})
 
-	_, err = doc.Path(0).Get()
+	_, err := doc.Path(0).Get()
 	require.ErrorContains(t, err, "&automerge.Path{0}: tried to read index 0 of non-list &automerge.Map{}")
 
 	err = doc.Path(0).Set(1)

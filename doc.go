@@ -87,7 +87,72 @@ only use them from one goroutine at a time.
 If you retain a Map, List, Counter, or Text object while the document is being
 modified concurrently be aware that its value may change, or it may be deleted
 from the document. A safer pattern is to fork the document, make the changes you
-want, and then merge your changes back into the document.
+want, and then merge your changes back into the shared document.
+
+There are a few different ways to keep distributed automerge docs in sync. If you're mostly
+making changes in one place and syncing them to another, you can use [Doc.SaveIncremental] and
+[Doc.LoadIncremental]
+
+	//* process 1 *
+	initBytes, err := doc.Save()
+	for {
+		// ... make changes ...
+		bytes, err := doc.SaveIncremental()
+		ch <- bytes
+	}
+
+	//* process 2*
+	err := automerge.Load(initBytes)
+	for bytes := range ch {
+		err := doc.LoadIncremental(bytes)
+	}
+
+If both peers are making changes you can use a [SyncState] object to keep them
+in sync.  This wraps an underlying efficient sync protocol to minimize both
+round-trips and bandwidth used.
+
+	//* process 1 *
+	syncState, err := automerge.NewSyncState(doc)
+	for {
+		m, valid, err := syncState.GenerateMessage()
+		if valid {
+			sendCh <- m
+		}
+		msg := <-recvCh
+		err := syncState.ReceiveMessage(msg)
+	}
+
+	//* process 2 *
+	syncState, err := automerge.NewSyncState(doc)
+	for {
+		msg := <-sendCh
+		err := syncState.ReceiveMessage(msg)
+
+		m, valid, err := syncState.GenerateMessage()
+		if valid {
+			recvCh <- m
+		}
+	}
+
+If you need more flexibility, you can use [Doc.Changes] and [Doc.Apply] to
+manually track the changes you want to transfer. This puts more burden on
+the implementor to ensure an absense of bugs.
+
+	//* process 1 *
+	heads := doc.Heads()
+	for {
+		// ... make changes ...
+		changes, err := doc.Changes(heads)
+		heads = doc.Heads()
+		bytes := changes.Save()
+		ch <- bytes
+	}
+
+	//* process 2 *
+	for bytes := range ch {
+		changes, err := automerge.LoadChanges(bytes)
+		err := doc.Apply(changes)
+	}
 
 [automerge]: https://automerge.org
 [automerge-rs]: https://github.com/automerge/automerge-rs
