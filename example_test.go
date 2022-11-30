@@ -98,3 +98,27 @@ loop:
 		}
 	}
 }
+
+/*
+func ExampleDoc_SaveIncremental() {
+	doc1 := automerge.New(nil)
+	// make initial changes
+
+	changes := make(chan []byte)
+
+	go func() {
+		doc2 := automerge.Load(initialState)
+
+		for ch := range changes {
+			err := doc2.LoadIncremental(ch)
+			if err != nil {
+				panic(err)
+			}
+		}
+	}()
+
+	for {
+
+	}
+}
+*/

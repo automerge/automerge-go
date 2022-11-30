@@ -28,7 +28,7 @@ struct AMlistItems AMresultValueListItems(AMresult *r) { return AMresultValue(r)
 struct AMmapItems AMresultValueMapItems(AMresult *r) { return AMresultValue(r).map_items; }
 const struct AMobjId *AMresultValueObjId(AMresult *r) { return AMresultValue(r).obj_id; }
 struct AMobjItems AMresultValueObjItems(AMresult *r) { return AMresultValue(r).obj_items; }
-const char *AMresultValueStr(AMresult *r) { return AMresultValue(r).str; }
+struct AMbyteSpan AMresultValueStr(AMresult *r) { return AMresultValue(r).str; }
 struct AMstrs AMresultValueStrs(AMresult *r) { return AMresultValue(r).strs; }
 const struct AMsyncMessage *AMresultValueSyncMessage(AMresult *r) { return AMresultValue(r).sync_message; }
 struct AMsyncState *AMresultValueSyncState(AMresult *r) { return AMresultValue(r).sync_state; }
@@ -82,15 +82,15 @@ var (
 	KindText Kind = 1024
 )
 
-// ActorId identifies the "actor" who is modifying a document.
+// ActorID identifies the "actor" who is modifying a document.
 // Each operation applied to the document is identified by its
 // actorId and a counter, so it is important that each actor
 // generates a linear history of edits.
-type ActorId struct {
+type ActorID struct {
 	v *C.AMactorId
 }
 
-func (a *ActorId) init(r *C.AMresult) error {
+func (a *ActorID) init(r *C.AMresult) error {
 	if tag := C.AMresultValueTag(r); tag != C.AM_VALUE_ACTOR_ID {
 		return fmt.Errorf("expected VALUE_ACTOR_ID, got %v", tag)
 	}
@@ -99,9 +99,9 @@ func (a *ActorId) init(r *C.AMresult) error {
 	return nil
 }
 
-// NewActorId creates a new random actor id
-func NewActorId() *ActorId {
-	a, err := call[*ActorId](C.AMactorIdInit())
+// NewActorID creates a new random actor id
+func NewActorID() *ActorID {
+	a, err := call[*ActorID](C.AMactorIdInit())
 	// this call cannot error
 	if err != nil {
 		panic(err)
@@ -109,37 +109,36 @@ func NewActorId() *ActorId {
 	return a
 }
 
-// ActorIdFromString creates an actor id from a string.
+// ActorIDFromString creates an actor id from a string.
 // The string must be an even number of hex characters.
-func ActorIdFromString(id string) (*ActorId, error) {
-	cstr := C.CString(id)
-	defer C.free(unsafe.Pointer(cstr))
-	return call[*ActorId](C.AMactorIdInitStr(cstr))
+func ActorIDFromString(id string) (*ActorID, error) {
+	cID, free := toByteSpanStr(id)
+	defer free()
+	return call[*ActorID](C.AMactorIdInitStr(cID))
 }
 
-// ActorIdFromBytes creates an actor id from those bytes
-func ActorIdFromBytes(id []byte) (*ActorId, error) {
-	cbytes := C.CBytes(id)
-	defer C.free(cbytes)
-	return call[*ActorId](C.AMactorIdInitBytes((*C.uchar)(cbytes), C.ulong(len(id))))
+// ActorIDFromBytes creates an actor id from those bytes
+func ActorIDFromBytes(id []byte) (*ActorID, error) {
+	cBytes, free := toByteSpan(id)
+	defer free()
+	return call[*ActorID](C.AMactorIdInitBytes(cBytes.src, cBytes.count))
 }
 
 // Bytes returns the underlying bytes of the actor id
-func (a *ActorId) Bytes() []byte {
+func (a *ActorID) Bytes() []byte {
 	defer runtime.KeepAlive(a)
-	ret := C.AMactorIdBytes(a.v)
-	return C.GoBytes(unsafe.Pointer(ret.src), C.int(ret.count))
+	return fromByteSpan(C.AMactorIdBytes(a.v))
 }
 
 // String returns the hex-encoded form of the actor id bytes
-func (a *ActorId) String() string {
+func (a *ActorID) String() string {
 	defer runtime.KeepAlive(a)
-	return C.GoString(C.AMactorIdStr(a.v))
+	return fromByteSpanStr(C.AMactorIdStr(a.v))
 }
 
 // Cmp returns 0 if the two actor ids are identical,
 // -1 if a < b and 1 if b > a
-func (a *ActorId) Cmp(b *ActorId) int {
+func (a *ActorID) Cmp(b *ActorID) int {
 	defer runtime.KeepAlive(a)
 	defer runtime.KeepAlive(b)
 	return int(C.AMactorIdCmp(a.v, b.v))
@@ -172,13 +171,13 @@ func (d *Doc) init(r *C.AMresult) error {
 	return nil
 }
 
-// New creates a new document from actorId. If actorId == nil then
-// a new random actor id will be created.
-func New(actorId *ActorId) *Doc {
+// New creates a new document with the given actorId.
+// If actorID == nil then a new random actor id will be created.
+func New(actorID *ActorID) *Doc {
 	var a *C.AMactorId
-	if actorId != nil {
-		defer runtime.KeepAlive(actorId)
-		a = actorId.v
+	if actorID != nil {
+		defer runtime.KeepAlive(actorID)
+		a = actorID.v
 	}
 
 	d, err := call[*Doc](C.AMcreate(a))
@@ -191,10 +190,10 @@ func New(actorId *ActorId) *Doc {
 
 // Load loads a document from its serialized form
 func Load(b []byte) (*Doc, error) {
-	cbytes := C.CBytes(b)
-	defer C.free(unsafe.Pointer(cbytes))
+	cbytes, free := toByteSpan(b)
+	defer free()
 
-	return call[*Doc](C.AMload((*C.uchar)(cbytes), C.ulong(len(b))))
+	return call[*Doc](C.AMload(cbytes.src, cbytes.count))
 }
 
 // Save exports a document to its serialized form
@@ -211,7 +210,7 @@ func (d *Doc) Save() ([]byte, error) {
 
 // RootMap returns the root of the document as a Map
 func (d *Doc) RootMap() *Map {
-	return &Map{doc: d, objId: &objId{v: (*C.AMobjId)(C.AM_ROOT)}}
+	return &Map{doc: d, objID: &objID{v: (*C.AMobjId)(C.AM_ROOT)}}
 }
 
 // Root returns the root of the document as
@@ -233,12 +232,13 @@ func (d *Doc) Path(path ...any) *Path {
 // The returned ChangeHashes contains a single hash representing the
 // current state of the document.
 func (d *Doc) Commit(msg string) (*ChangeHashes, error) {
-	cstr := C.CString(msg)
-	defer C.free(unsafe.Pointer(cstr))
+	cMsg, free := toByteSpanStr(msg)
+	defer free()
+
 	cDoc, unlock := d.lock()
 	defer unlock()
 
-	return call[*ChangeHashes](C.AMcommit(cDoc, cstr, nil))
+	return call[*ChangeHashes](C.AMcommit(cDoc, cMsg, nil))
 }
 
 // Heads returns the current heads for the document
@@ -296,10 +296,10 @@ func (d *Doc) LoadIncremental(raw []byte) error {
 	cDoc, unlock := d.lock()
 	defer unlock()
 
-	cBytes := C.CBytes(raw)
-	defer C.free(cBytes)
+	cBytes, free := toByteSpan(raw)
+	defer free()
 
-	_, err := call[*uintValue](C.AMloadIncremental(cDoc, (*C.uchar)(cBytes), C.ulong(len(raw))))
+	_, err := call[*uintValue](C.AMloadIncremental(cDoc, cBytes.src, cBytes.count))
 	return err
 }
 
@@ -330,22 +330,40 @@ func (d *Doc) Merge(d2 *Doc) (*ChangeHashes, error) {
 	return call[*ChangeHashes](C.AMmerge(cDoc, cDoc2))
 }
 
-// ActorId returns the current actorId of the doc.
-func (d *Doc) ActorId() (*ActorId, error) {
+// ActorID returns the current actorId of the doc.
+func (d *Doc) ActorID() (*ActorID, error) {
 	cDoc, unlock := d.lock()
 	defer unlock()
 
-	return call[*ActorId](C.AMgetActorId(cDoc))
+	return call[*ActorID](C.AMgetActorId(cDoc))
 }
 
-// SetActorId updates the current actorId of the doc.
-func (d *Doc) SetActorId(ai *ActorId) error {
+// SetActorID updates the current actorId of the doc.
+func (d *Doc) SetActorID(ai *ActorID) error {
 	cDoc, unlock := d.lock()
 	defer unlock()
 	defer runtime.KeepAlive(ai)
 
 	_, err := call[*void](C.AMsetActorId(cDoc, ai.v))
 	return err
+}
+
+func toByteSpan(b []byte) (C.AMbyteSpan, func()) {
+	cBytes := C.CBytes(b)
+	return C.AMbyteSpan{src: (*C.uchar)(cBytes), count: C.ulong(len(b))}, func() {
+		C.free(cBytes)
+	}
+}
+func fromByteSpan(bs C.AMbyteSpan) []byte {
+	return C.GoBytes(unsafe.Pointer(bs.src), C.int(bs.count))
+}
+
+func toByteSpanStr(s string) (C.AMbyteSpan, func()) {
+	return toByteSpan([]byte(s))
+}
+
+func fromByteSpanStr(bs C.AMbyteSpan) string {
+	return string(fromByteSpan(bs))
 }
 
 type byteSpan struct {
@@ -362,15 +380,15 @@ func (bs *byteSpan) init(r *C.AMresult) error {
 }
 
 func (bs *byteSpan) bytes() []byte {
-	return C.GoBytes(unsafe.Pointer(bs.v.src), C.int(bs.v.count))
+	return fromByteSpan(bs.v)
 }
 
-type objId struct {
+type objID struct {
 	r *C.AMresult
 	v *C.AMobjId
 }
 
-func (o *objId) init(r *C.AMresult) error {
+func (o *objID) init(r *C.AMresult) error {
 	if tag := C.AMresultValueTag(r); tag != C.AM_VALUE_OBJ_ID {
 		return fmt.Errorf("expected VALUE_OBJ_ID, got %v", tag)
 	}
@@ -417,10 +435,10 @@ func (cs *Changes) init(r *C.AMresult) error {
 
 // LoadChanges loads Changes from bytes returned by [Changes.Save]
 func LoadChanges(raw []byte) (*Changes, error) {
-	cBytes := C.CBytes(raw)
-	defer C.free(cBytes)
+	cBytes, free := toByteSpan(raw)
+	defer free()
 
-	return call[*Changes](C.AMchangeLoadDocument((*C.uchar)(cBytes), C.ulong(len(raw))))
+	return call[*Changes](C.AMchangeLoadDocument(cBytes.src, cBytes.count))
 }
 
 // Save saves the Changes to bytes to be passed to [LoadChanges]
@@ -437,7 +455,7 @@ func (cs *Changes) Save() []byte {
 		}
 
 		b := C.AMchangeRawBytes(c)
-		out = append(out, C.GoBytes(unsafe.Pointer(b.src), C.int(b.count))...)
+		out = append(out, fromByteSpan(b)...)
 	}
 	return out
 }
@@ -476,7 +494,7 @@ func (ch *ChangeHashes) Get() []ChangeHash {
 		if b.src == (*C.uchar)(C.NULL) {
 			break
 		}
-		out = append(out, ChangeHash(C.GoBytes(unsafe.Pointer(b.src), C.int(b.count))))
+		out = append(out, ChangeHash(fromByteSpan(b)))
 	}
 	return out
 }
@@ -509,13 +527,13 @@ func NewChangeHash(s string) (ChangeHash, error) {
 // Map is an automerge type that stores a map of strings to values
 type Map struct {
 	doc   *Doc
-	objId *objId
+	objID *objID
 	path  *Path
 }
 
 func (m *Map) lock() (*C.AMdoc, *C.AMobjId, func()) {
 	cDoc, unlock := m.doc.lock()
-	return cDoc, m.objId.v, func() {
+	return cDoc, m.objID.v, func() {
 		runtime.KeepAlive(m)
 		unlock()
 	}
@@ -529,7 +547,7 @@ func NewMap() *Map {
 
 // Len returns the number of keys set in the map, or 0 on error
 func (m *Map) Len() int {
-	if m.objId == nil {
+	if m.objID == nil {
 		if m.path == nil {
 			return 0
 		}
@@ -550,7 +568,7 @@ func (m *Map) Len() int {
 // the type you provide cannot be converted to an automerge type,
 // or if this is the first write to a [Path.Map] and the path is not traverseable.
 func (m *Map) Set(key string, value any) error {
-	if m.objId == nil {
+	if m.objID == nil {
 		if m.path == nil {
 			return fmt.Errorf("automerge.Map: tried to write to detached map")
 		}
@@ -558,11 +576,11 @@ func (m *Map) Set(key string, value any) error {
 		if err != nil {
 			return err
 		}
-		m.objId = m2.objId
+		m.objID = m2.objID
 	}
 
-	cstr := C.CString(key)
-	defer C.free(unsafe.Pointer(cstr))
+	cKey, free := toByteSpanStr(key)
+	defer free()
 
 	cDoc, cObj, unlock := m.lock()
 	defer unlock()
@@ -573,51 +591,51 @@ func (m *Map) Set(key string, value any) error {
 	}
 
 	if value == nil {
-		_, err := call[*void](C.AMmapPutNull(cDoc, cObj, cstr))
+		_, err := call[*void](C.AMmapPutNull(cDoc, cObj, cKey))
 		return err
 	}
 
 	switch v := value.(type) {
 	case bool:
-		_, err = call[*void](C.AMmapPutBool(cDoc, cObj, cstr, C.bool(v)))
+		_, err = call[*void](C.AMmapPutBool(cDoc, cObj, cKey, C.bool(v)))
 	case string:
-		vstr := C.CString(v)
-		defer C.free(unsafe.Pointer(vstr))
-		_, err = call[*void](C.AMmapPutStr(cDoc, cObj, cstr, vstr))
+		vStr, free := toByteSpanStr(v)
+		defer free()
+		_, err = call[*void](C.AMmapPutStr(cDoc, cObj, cKey, vStr))
 
 	case []byte:
-		vbytes := C.CBytes(v)
-		defer C.free(vbytes)
-		_, err = call[*void](C.AMmapPutBytes(cDoc, cObj, cstr, (*C.uchar)(vbytes), C.ulong(len(v))))
+		vBytes, free := toByteSpan(v)
+		defer free()
+		_, err = call[*void](C.AMmapPutBytes(cDoc, cObj, cKey, vBytes.src, vBytes.count))
 
 	case int64:
-		_, err = call[*void](C.AMmapPutInt(cDoc, cObj, cstr, C.longlong(v)))
+		_, err = call[*void](C.AMmapPutInt(cDoc, cObj, cKey, C.longlong(v)))
 
 	case uint64:
-		_, err = call[*void](C.AMmapPutUint(cDoc, cObj, cstr, C.ulonglong(v)))
+		_, err = call[*void](C.AMmapPutUint(cDoc, cObj, cKey, C.ulonglong(v)))
 
 	case float64:
-		_, err = call[*void](C.AMmapPutF64(cDoc, cObj, cstr, C.double(v)))
+		_, err = call[*void](C.AMmapPutF64(cDoc, cObj, cKey, C.double(v)))
 
 	case time.Time:
-		_, err = call[*void](C.AMmapPutTimestamp(cDoc, cObj, cstr, C.longlong(v.UnixMilli())))
+		_, err = call[*void](C.AMmapPutTimestamp(cDoc, cObj, cKey, C.longlong(v.UnixMilli())))
 
 	case []any:
-		objId, err := call[*objId](C.AMmapPutObject(cDoc, cObj, cstr, C.AM_OBJ_TYPE_LIST))
+		objID, err := call[*objID](C.AMmapPutObject(cDoc, cObj, cKey, C.AM_OBJ_TYPE_LIST))
 		if err != nil {
 			return err
 		}
-		list := &List{doc: m.doc, objId: objId}
+		list := &List{doc: m.doc, objID: objID}
 		unlock()
 		return list.Append(v...)
 
 	case map[string]any:
-		objId, err := call[*objId](C.AMmapPutObject(cDoc, cObj, cstr, C.AM_OBJ_TYPE_MAP))
+		objID, err := call[*objID](C.AMmapPutObject(cDoc, cObj, cKey, C.AM_OBJ_TYPE_MAP))
 		if err != nil {
 			return err
 		}
 
-		m := &Map{doc: m.doc, objId: objId}
+		m := &Map{doc: m.doc, objID: objID}
 		unlock()
 		for key, val := range v {
 			if err := m.Set(key, val); err != nil {
@@ -626,58 +644,58 @@ func (m *Map) Set(key string, value any) error {
 		}
 
 	case *Map:
-		if v.objId != nil {
+		if v.objID != nil {
 			return fmt.Errorf("automerge.Map: tried to move an existing *automerge.Map")
 		}
 
-		objId, err := call[*objId](C.AMmapPutObject(cDoc, cObj, cstr, C.AM_OBJ_TYPE_MAP))
+		objID, err := call[*objID](C.AMmapPutObject(cDoc, cObj, cKey, C.AM_OBJ_TYPE_MAP))
 		if err != nil {
 			return err
 		}
 
 		v.doc = m.doc
-		v.objId = objId
+		v.objID = objID
 
 	case *List:
-		if v.objId != nil {
+		if v.objID != nil {
 			return fmt.Errorf("automerge.Map: tried to move an existing *automerge.List")
 		}
 
-		objId, err := call[*objId](C.AMmapPutObject(cDoc, cObj, cstr, C.AM_OBJ_TYPE_LIST))
+		objID, err := call[*objID](C.AMmapPutObject(cDoc, cObj, cKey, C.AM_OBJ_TYPE_LIST))
 		if err != nil {
 			return err
 		}
 		v.doc = m.doc
-		v.objId = objId
+		v.objID = objID
 
 	case *Counter:
 		if v.m != nil || v.l != nil {
 			return fmt.Errorf("automerge.Map: tried to move an existing *automerge.Counter")
 		}
 
-		_, err = call[*void](C.AMmapPutCounter(cDoc, cObj, cstr, C.longlong(v.val)))
+		_, err = call[*void](C.AMmapPutCounter(cDoc, cObj, cKey, C.longlong(v.val)))
 		if err == nil {
 			v.m = m
 			v.key = key
 		}
 
 	case *Text:
-		if v.objId != nil {
+		if v.objID != nil {
 			return fmt.Errorf("automerge.Map: tried to move an existing *automerge.Text")
 		}
-		objId, err := call[*objId](C.AMmapPutObject(cDoc, cObj, cstr, C.AM_OBJ_TYPE_TEXT))
+		objID, err := call[*objID](C.AMmapPutObject(cDoc, cObj, cKey, C.AM_OBJ_TYPE_TEXT))
 		if err != nil {
 			return err
 		}
 		v.doc = m.doc
-		v.objId = objId
+		v.objID = objID
 		unlock()
 		if err = v.Set(v.val); err != nil {
 			return err
 		}
 
 	case *void:
-		_, err = call[*void](C.AMmapDelete(cDoc, cObj, cstr))
+		_, err = call[*void](C.AMmapDelete(cDoc, cObj, cKey))
 
 	default:
 		err = fmt.Errorf("automerge.Map: tried to write unsupported value %#v", value)
@@ -713,19 +731,19 @@ func (m *Map) Keys() ([]string, error) {
 // operation fails, or if this is the first attempt to access
 // a Path.Map() and the path is not traverseable
 func (m *Map) Get(key string) (*Value, error) {
-	if m.objId == nil {
+	if m.objID == nil {
 		if m.path == nil {
 			return nil, fmt.Errorf("automerge.Map: tried to read detached map")
 		}
 		return m.path.Path(key).Get()
 	}
 
-	cstr := C.CString(key)
-	defer C.free(unsafe.Pointer(cstr))
+	cKey, free := toByteSpanStr(key)
+	defer free()
 	cDoc, cObj, unlock := m.lock()
 	defer unlock()
 
-	r := C.AMmapGet(cDoc, cObj, cstr, nil)
+	r := C.AMmapGet(cDoc, cObj, cKey, nil)
 	unlock()
 	v, err := createValue(m.doc, r)
 	if err == nil && v.Kind() == KindCounter {
@@ -764,7 +782,7 @@ func (m *Map) load() (map[string]any, error) {
 // Iter returns a MapItems to let you iterate over the contents of the Map.
 // You must check for errors by calling [MapItems.Error]
 func (m *Map) Iter() *MapItems {
-	if m.objId == nil {
+	if m.objID == nil {
 		if m.path == nil {
 			return &MapItems{err: fmt.Errorf("automerge.Map: tried to read detached map")}
 		}
@@ -783,7 +801,7 @@ func (m *Map) Iter() *MapItems {
 	cDoc, cObj, unlock := m.lock()
 	defer unlock()
 
-	iter, err := call[*MapItems](C.AMmapRange(cDoc, cObj, nil, nil, nil))
+	iter, err := call[*MapItems](C.AMmapRange(cDoc, cObj, C.AMstr(nil), C.AMstr(nil), nil))
 	if err != nil {
 		return &MapItems{err: err}
 	}
@@ -793,7 +811,7 @@ func (m *Map) Iter() *MapItems {
 
 // GoString returns a representation suitable for debugging.
 func (m *Map) GoString() string {
-	if m.objId == nil {
+	if m.objID == nil {
 		return "&automerge.Map{}"
 	}
 	iter := m.Iter()
@@ -862,7 +880,7 @@ func (mi *MapItems) Next() (string, *Value, bool) {
 	}
 
 	cKey := C.AMmapItemKey(item)
-	key := C.GoString(cKey)
+	key := fromByteSpanStr(cKey)
 
 	// TODO: we should get the value from the mapItems instead to be concurrency safe.
 	// but this requires a bunch of duplication to get values from map items.
@@ -882,7 +900,7 @@ func (mi *MapItems) Error() error {
 
 type List struct {
 	doc   *Doc
-	objId *objId
+	objID *objID
 	path  *Path
 }
 
@@ -894,7 +912,7 @@ func NewList() *List {
 
 func (l *List) lock() (*C.AMdoc, *C.AMobjId, func()) {
 	cDoc, unlock := l.doc.lock()
-	return cDoc, l.objId.v, func() {
+	return cDoc, l.objID.v, func() {
 		runtime.KeepAlive(l)
 		unlock()
 	}
@@ -926,7 +944,7 @@ func (l *List) load() ([]any, error) {
 
 // Len returns the length of the list, or 0 on error
 func (l *List) Len() int {
-	if l.objId == nil {
+	if l.objID == nil {
 		if l.path == nil {
 			return 0
 		}
@@ -946,7 +964,7 @@ func (l *List) Len() int {
 // Iter returns a ListItems to let you iterate over the contents of the List.
 // You must check for errors by calling [ListItems.Error]
 func (l *List) Iter() *ListItems {
-	if l.objId == nil {
+	if l.objID == nil {
 		v, err := l.path.Get()
 		if err != nil {
 			return &ListItems{err: err}
@@ -972,7 +990,7 @@ func (l *List) Iter() *ListItems {
 
 // Get returns the value at index i
 func (l *List) Get(i int) (*Value, error) {
-	if l.objId == nil {
+	if l.objID == nil {
 		return l.path.Path(i).Get()
 	}
 
@@ -1045,7 +1063,7 @@ func (l *List) Delete(idx int) error {
 
 // GoString returns a representation suitable for debugging.
 func (l *List) GoString() string {
-	if l.objId == nil {
+	if l.objID == nil {
 		return "&automerge.Map{}"
 	}
 	iter := l.Iter()
@@ -1081,7 +1099,7 @@ func (l *List) GoString() string {
 }
 
 func (l *List) put(i C.ulong, before bool, value any) error {
-	if l.objId == nil {
+	if l.objID == nil {
 		if l.path == nil {
 			return fmt.Errorf("automerge.List: tried to write to detached list")
 		}
@@ -1089,7 +1107,7 @@ func (l *List) put(i C.ulong, before bool, value any) error {
 		if err != nil {
 			return err
 		}
-		l.objId = l2.objId
+		l.objID = l2.objID
 	}
 
 	value, err := normalize(value)
@@ -1109,14 +1127,14 @@ func (l *List) put(i C.ulong, before bool, value any) error {
 	case bool:
 		_, err = call[*void](C.AMlistPutBool(cDoc, cObj, i, C.bool(before), C.bool(v)))
 	case string:
-		vstr := C.CString(v)
-		defer C.free(unsafe.Pointer(vstr))
-		_, err = call[*void](C.AMlistPutStr(cDoc, cObj, i, C.bool(before), vstr))
+		vStr, free := toByteSpanStr(v)
+		defer free()
+		_, err = call[*void](C.AMlistPutStr(cDoc, cObj, i, C.bool(before), vStr))
 
 	case []byte:
-		vbytes := C.CBytes(v)
-		defer C.free(vbytes)
-		_, err = call[*void](C.AMlistPutBytes(cDoc, cObj, i, C.bool(before), (*C.uchar)(vbytes), C.ulong(len(v))))
+		vBytes, free := toByteSpan(v)
+		defer free()
+		_, err = call[*void](C.AMlistPutBytes(cDoc, cObj, i, C.bool(before), vBytes.src, vBytes.count))
 
 	case int64:
 		_, err = call[*void](C.AMlistPutInt(cDoc, cObj, i, C.bool(before), C.longlong(v)))
@@ -1131,22 +1149,22 @@ func (l *List) put(i C.ulong, before bool, value any) error {
 		_, err = call[*void](C.AMlistPutTimestamp(cDoc, cObj, i, C.bool(before), C.longlong(v.UnixMilli())))
 
 	case []any:
-		objId, err := call[*objId](C.AMlistPutObject(cDoc, cObj, i, C.bool(before), C.AM_OBJ_TYPE_LIST))
+		objID, err := call[*objID](C.AMlistPutObject(cDoc, cObj, i, C.bool(before), C.AM_OBJ_TYPE_LIST))
 		if err != nil {
 			return err
 		}
 		unlock()
-		list := &List{doc: l.doc, objId: objId}
+		list := &List{doc: l.doc, objID: objID}
 		return list.Append(v...)
 
 	case map[string]any:
-		objId, err := call[*objId](C.AMlistPutObject(cDoc, cObj, i, C.bool(before), C.AM_OBJ_TYPE_MAP))
+		objID, err := call[*objID](C.AMlistPutObject(cDoc, cObj, i, C.bool(before), C.AM_OBJ_TYPE_MAP))
 		if err != nil {
 			return err
 		}
 
 		unlock()
-		m := &Map{doc: l.doc, objId: objId}
+		m := &Map{doc: l.doc, objID: objID}
 		for key, val := range v {
 			if err := m.Set(key, val); err != nil {
 				return err
@@ -1165,41 +1183,41 @@ func (l *List) put(i C.ulong, before bool, value any) error {
 		}
 
 	case *Text:
-		if v.objId != nil {
+		if v.objID != nil {
 			return fmt.Errorf("automerge.List: tried to move an attached *automerge.Text")
 		}
-		objId, err := call[*objId](C.AMlistPutObject(cDoc, cObj, i, C.bool(before), C.AM_OBJ_TYPE_TEXT))
+		objID, err := call[*objID](C.AMlistPutObject(cDoc, cObj, i, C.bool(before), C.AM_OBJ_TYPE_TEXT))
 		if err != nil {
 			return err
 		}
 		v.doc = l.doc
-		v.objId = objId
+		v.objID = objID
 		unlock()
 		if err := v.Set(v.val); err != nil {
 			return err
 		}
 
 	case *Map:
-		if v.objId != nil {
+		if v.objID != nil {
 			return fmt.Errorf("automerge.List: tried to move an attached *automerge.Map")
 		}
-		objId, err := call[*objId](C.AMlistPutObject(cDoc, cObj, i, C.bool(before), C.AM_OBJ_TYPE_MAP))
+		objID, err := call[*objID](C.AMlistPutObject(cDoc, cObj, i, C.bool(before), C.AM_OBJ_TYPE_MAP))
 		if err != nil {
 			return err
 		}
 		v.doc = l.doc
-		v.objId = objId
+		v.objID = objID
 
 	case *List:
-		if v.objId != nil {
+		if v.objID != nil {
 			return fmt.Errorf("automerge.List: tried to move an attached *automerge.List")
 		}
-		objId, err := call[*objId](C.AMlistPutObject(cDoc, cObj, i, C.bool(before), C.AM_OBJ_TYPE_LIST))
+		objID, err := call[*objID](C.AMlistPutObject(cDoc, cObj, i, C.bool(before), C.AM_OBJ_TYPE_LIST))
 		if err != nil {
 			return err
 		}
 		v.doc = l.doc
-		v.objId = objId
+		v.objID = objID
 
 	default:
 		err = fmt.Errorf("automerge.List: tried to write unsupported value %#v", value)
@@ -1326,11 +1344,11 @@ func (c *Counter) Inc(delta int64) error {
 		return err
 	}
 
-	cstr := C.CString(c.key)
-	defer C.free(unsafe.Pointer(cstr))
+	cKey, free := toByteSpanStr(c.key)
+	defer free()
 	cDoc, cObj, unlock := c.m.lock()
 	defer unlock()
-	_, err := call[*void](C.AMmapIncrement(cDoc, cObj, cstr, C.longlong(delta)))
+	_, err := call[*void](C.AMmapIncrement(cDoc, cObj, cKey, C.longlong(delta)))
 	return err
 }
 
@@ -1349,7 +1367,7 @@ func (c *Counter) GoString() string {
 // Text is a mutable string that can be edited collaboratively
 type Text struct {
 	doc   *Doc
-	objId *objId
+	objID *objID
 	path  *Path
 
 	val string
@@ -1357,7 +1375,7 @@ type Text struct {
 
 func (t *Text) lock() (*C.AMdoc, *C.AMobjId, func()) {
 	cDoc, unlock := t.doc.lock()
-	return cDoc, t.objId.v, unlock
+	return cDoc, t.objID.v, unlock
 }
 
 // NewText returns a detached Text with the given starting value.
@@ -1367,7 +1385,7 @@ func NewText(s string) *Text {
 }
 
 func (t *Text) Len() int {
-	if t.objId == nil {
+	if t.objID == nil {
 		if t.path == nil {
 			return 0
 		}
@@ -1385,7 +1403,7 @@ func (t *Text) Len() int {
 
 // Get returns the current value as a string
 func (t *Text) Get() (string, error) {
-	if t.objId == nil {
+	if t.objID == nil {
 		if t.path == nil {
 			return "", fmt.Errorf("automerge.Text: tried to read detached text")
 		}
@@ -1424,7 +1442,7 @@ func (t *Text) Insert(pos int, s string) error {
 	return t.splice(C.ulong(pos), 0, s)
 }
 
-// Insert deletes del characters from position pos
+// Delete deletes del characters from position pos
 func (t *Text) Delete(pos int, del int) error {
 	return t.splice(C.ulong(pos), C.ulong(del), "")
 }
@@ -1441,7 +1459,7 @@ func (t *Text) Splice(pos int, del int, s string) error {
 }
 
 func (t *Text) splice(pos, del C.ulong, s string) error {
-	if t.objId == nil {
+	if t.objID == nil {
 		if t.path == nil {
 			return fmt.Errorf("automerge.Text: tried to write to detached text")
 		}
@@ -1450,15 +1468,15 @@ func (t *Text) splice(pos, del C.ulong, s string) error {
 			return err
 		}
 		t.doc = t2.doc
-		t.objId = t2.objId
+		t.objID = t2.objID
 	}
 
-	cstr := C.CString(s)
-	defer C.free(unsafe.Pointer(cstr))
+	cStr, free := toByteSpanStr(s)
+	defer free()
 	cDoc, cObj, unlock := t.lock()
 	defer unlock()
 
-	_, err := call[*void](C.AMspliceText(cDoc, cObj, pos, del, cstr))
+	_, err := call[*void](C.AMspliceText(cDoc, cObj, pos, del, cStr))
 	if err != nil {
 		return fmt.Errorf("automerge.Text: failed to write: %w", err)
 	}
@@ -1467,7 +1485,7 @@ func (t *Text) splice(pos, del C.ulong, s string) error {
 
 // GoString returns a representation suitable for debugging.
 func (t *Text) GoString() string {
-	if t.objId == nil && t.path == nil {
+	if t.objID == nil && t.path == nil {
 		return fmt.Sprintf("&automerge.Text{%#v}", t.val)
 	}
 	v, err := t.Get()
@@ -1486,7 +1504,7 @@ func (us *utf8String) init(r *C.AMresult) error {
 		return fmt.Errorf("expected VALUE_STR, got %v", tag)
 	}
 
-	us.val = C.GoString(C.AMresultValueStr(r))
+	us.val = fromByteSpanStr(C.AMresultValueStr(r))
 	return nil
 }
 
@@ -1520,10 +1538,10 @@ func NewSyncState(d *Doc) *SyncState {
 
 // LoadSyncState lets you resume syncing with a peer from where you left off.
 func LoadSyncState(d *Doc, raw []byte) (*SyncState, error) {
-	cBytes := C.CBytes(raw)
-	defer C.free(cBytes)
+	cBytes, free := toByteSpan(raw)
+	defer free()
 
-	ss, err := call[*SyncState](C.AMsyncStateDecode((*C.uchar)(cBytes), C.ulong(len(raw))))
+	ss, err := call[*SyncState](C.AMsyncStateDecode(cBytes.src, cBytes.count))
 	if err != nil {
 		return nil, err
 	}
@@ -1544,9 +1562,6 @@ func (ss *SyncState) ReceiveMessage(msg []byte) error {
 	defer runtime.KeepAlive(sm)
 	cDoc, unlock := ss.doc.lock()
 	defer unlock()
-
-	cBytes := C.CBytes(msg)
-	defer C.free(cBytes)
 
 	_, err = call[*void](C.AMreceiveSyncMessage(cDoc, ss.val, sm.v))
 	return err
@@ -1611,10 +1626,10 @@ func (sm *syncMessage) init(r *C.AMresult) error {
 }
 
 func loadSyncMessage(msg []byte) (*syncMessage, error) {
-	cBytes := C.CBytes(msg)
-	defer C.free(cBytes)
+	cBytes, free := toByteSpan(msg)
+	defer free()
 
-	return call[*syncMessage](C.AMsyncMessageDecode((*C.uchar)(cBytes), C.ulong(len(msg))))
+	return call[*syncMessage](C.AMsyncMessageDecode(cBytes.src, cBytes.count))
 }
 
 func (sm *syncMessage) save() ([]byte, error) {
@@ -1644,7 +1659,7 @@ func (v *Value) init(d *Doc, r *C.AMresult) error {
 	tag := C.AMresultValueTag(r)
 
 	if tag == C.AM_VALUE_OBJ_ID {
-		return v.initObjId(d, r)
+		return v.initObjID(d, r)
 	}
 
 	defer C.AMfree(r)
@@ -1658,11 +1673,10 @@ func (v *Value) init(d *Doc, r *C.AMresult) error {
 		v.val = nil
 
 	case KindStr:
-		v.val = C.GoString(C.AMresultValueStr(r))
+		v.val = fromByteSpanStr(C.AMresultValueStr(r))
 
 	case KindBytes:
-		span := C.AMresultValueBytes(r)
-		v.val = C.GoBytes(unsafe.Pointer(span.src), C.int(span.count))
+		v.val = fromByteSpan(C.AMresultValueBytes(r))
 
 	case KindFloat64:
 		v.val = float64(C.AMresultValueF64(r))
@@ -1689,10 +1703,10 @@ func (v *Value) init(d *Doc, r *C.AMresult) error {
 	return nil
 }
 
-// initObjId takes responsibliity for freeing r.
-func (v *Value) initObjId(d *Doc, r *C.AMresult) error {
-	o := &objId{r: r, v: C.AMresultValueObjId(r)}
-	runtime.SetFinalizer(o, func(*objId) { C.AMfree(r) })
+// initObjID takes responsibliity for freeing r.
+func (v *Value) initObjID(d *Doc, r *C.AMresult) error {
+	o := &objID{r: r, v: C.AMresultValueObjId(r)}
+	runtime.SetFinalizer(o, func(*objID) { C.AMfree(r) })
 
 	cDoc, unlock := d.lock()
 	defer unlock()
@@ -1700,13 +1714,13 @@ func (v *Value) initObjId(d *Doc, r *C.AMresult) error {
 	switch C.AMobjObjType(cDoc, o.v) {
 	case C.AM_OBJ_TYPE_LIST:
 		v.kind = KindList
-		v.val = &List{doc: d, objId: o}
+		v.val = &List{doc: d, objID: o}
 	case C.AM_OBJ_TYPE_MAP:
 		v.kind = KindMap
-		v.val = &Map{doc: d, objId: o}
+		v.val = &Map{doc: d, objID: o}
 	case C.AM_OBJ_TYPE_TEXT:
 		v.kind = KindText
-		v.val = &Text{doc: d, objId: o}
+		v.val = &Text{doc: d, objID: o}
 	default:
 		return fmt.Errorf("automerge.Value: unsupported object type %#v", C.AMobjObjType(d.cDoc, o.v))
 	}
@@ -1862,7 +1876,7 @@ func createValue(d *Doc, r *C.AMresult) (*Value, error) {
 		}
 		return ret, nil
 	case C.AM_STATUS_ERROR:
-		msg := C.GoString(C.AMerrorMessage(r))
+		msg := fromByteSpanStr(C.AMerrorMessage(r))
 		C.AMfree(r)
 		return nil, fmt.Errorf(msg)
 	case C.AM_STATUS_INVALID_RESULT:
@@ -1883,7 +1897,7 @@ func call[T interface {
 		ret = T(new(X))
 		err = ret.init(r)
 	case C.AM_STATUS_ERROR:
-		msg := C.GoString(C.AMerrorMessage(r))
+		msg := fromByteSpanStr(C.AMerrorMessage(r))
 		err = fmt.Errorf(msg)
 	case C.AM_STATUS_INVALID_RESULT:
 		err = fmt.Errorf("automerge: invalid result")

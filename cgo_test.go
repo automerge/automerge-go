@@ -9,42 +9,42 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestActorId(t *testing.T) {
-	a := automerge.NewActorId()
+func TestActorID(t *testing.T) {
+	a := automerge.NewActorID()
 
-	b, err := automerge.ActorIdFromString(a.String())
+	b, err := automerge.ActorIDFromString(a.String())
 	require.NoError(t, err)
 
-	c, err := automerge.ActorIdFromBytes(b.Bytes())
+	c, err := automerge.ActorIDFromBytes(b.Bytes())
 	require.NoError(t, err)
 
 	require.Equal(t, 0, a.Cmp(c))
 	require.Equal(t, 0, b.Cmp(a))
 
-	d, err := automerge.ActorIdFromString("x")
+	d, err := automerge.ActorIDFromString("x")
 	require.Error(t, err)
-	require.Equal(t, "Invalid actor ID: x", err.Error())
+	require.Contains(t, err.Error(), "nvalid actor ID")
 	require.Nil(t, d)
 
-	// e, err := automerge.ActorIdFromBytes([]byte{})
+	// e, err := automerge.ActorIDFromBytes([]byte{})
 	// require.Error(t, err)
 	// require.Equal(t, "Invalid actor ID: x", err.Error())
 	// require.Nil(t, e)
 
-	f, err := automerge.ActorIdFromString("abcd")
+	f, err := automerge.ActorIDFromString("abcd")
 	require.NoError(t, err)
-	g, err := automerge.ActorIdFromString("cdef")
+	g, err := automerge.ActorIDFromString("cdef")
 	require.NoError(t, err)
 
 	require.Equal(t, -1, f.Cmp(g))
 	require.Equal(t, 1, g.Cmp(f))
 
 	doc := automerge.New(a)
-	a2, err := doc.ActorId()
+	a2, err := doc.ActorID()
 	require.NoError(t, err)
 	require.Equal(t, a.String(), a2.String())
-	require.NoError(t, doc.SetActorId(f))
-	f2, err := doc.ActorId()
+	require.NoError(t, doc.SetActorID(f))
+	f2, err := doc.ActorID()
 	require.NoError(t, err)
 	require.Equal(t, f.String(), f2.String())
 }
@@ -140,7 +140,7 @@ func TestDoc_Fork(t *testing.T) {
 }
 
 func TestDoc_Errors(t *testing.T) {
-	ai, err := automerge.ActorIdFromString("5a1aac51ffc84d6cb7b72c626b35f962")
+	ai, err := automerge.ActorIDFromString("5a1aac51ffc84d6cb7b72c626b35f962")
 	require.NoError(t, err)
 	d := automerge.New(ai)
 	d2 := automerge.New(ai)

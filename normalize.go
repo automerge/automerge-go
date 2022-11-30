@@ -71,22 +71,22 @@ func As[T any](v *Value, errs ...error) (ret T, err error) {
 		return
 	}
 
-	switch (interface{})(ret).(type) {
+	switch (any)(ret).(type) {
 	case *Map:
 		if v.Kind() == KindMap {
-			return (interface{})(v.val).(T), nil
+			return v.val.(T), nil
 		}
 	case *List:
 		if v.Kind() == KindList {
-			return (interface{})(v.val).(T), nil
+			return v.val.(T), nil
 		}
 	case *Counter:
 		if v.Kind() == KindCounter {
-			return (interface{})(v.val).(T), nil
+			return v.val.(T), nil
 		}
 	case *Text:
 		if v.Kind() == KindText {
-			return (interface{})(v.val).(T), nil
+			return v.val.(T), nil
 		}
 
 	default:

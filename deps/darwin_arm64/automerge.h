@@ -335,7 +335,7 @@ typedef struct AMunknownValue {
  * A sequence of object items as an `AMobjItems` struct.
  *
  * \var AMvalue::str
- * A UTF-8 string.
+ * A UTF-8 string view as an `AMbyteSpan` struct.
  *
  * \var AMvalue::strs
  * A sequence of UTF-8 strings as an `AMstrs` struct.
@@ -421,11 +421,11 @@ enum AMvalueVariant {
    */
   AM_VALUE_OBJ_ITEMS,
   /**
-   * A UTF-8 string variant.
+   * A UTF-8 string view variant.
    */
   AM_VALUE_STR,
   /**
-   * A UTF-8 strings variant.
+   * A UTF-8 string views variant.
    */
   AM_VALUE_STRS,
   /**
@@ -507,7 +507,7 @@ typedef union AMvalue {
   };
   struct {
     AMvalueVariant str_tag;
-    const char *str;
+    struct AMbyteSpan str;
   };
   struct {
     AMvalueVariant strs_tag;
@@ -640,6 +640,7 @@ struct AMresult *AMactorIdInit(void);
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * src must be a byte array of size `>= count`
  */
@@ -650,16 +651,17 @@ struct AMresult *AMactorIdInitBytes(const uint8_t *src, size_t count);
  * \brief Allocates a new actor identifier and initializes it from a
  *        hexadecimal string.
  *
- * \param[in] hex_str A UTF-8 string.
+ * \param[in] hex_str A UTF-8 string view as an `AMbyteSpan` struct.
  * \return A pointer to an `AMresult` struct containing a pointer to an
  *         `AMactorId` struct.
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
- * hex_str must be a null-terminated array of `c_char`
+ * hex_str must be a valid pointer to an AMbyteSpan
  */
-struct AMresult *AMactorIdInitStr(const char *hex_str);
+struct AMresult *AMactorIdInitStr(struct AMbyteSpan hex_str);
 
 /**
  * \memberof AMactorId
@@ -667,13 +669,13 @@ struct AMresult *AMactorIdInitStr(const char *hex_str);
  *
  * \param[in] actor_id A pointer to an `AMactorId` struct.
  * \pre \p actor_id `!= NULL`.
- * \return A UTF-8 string.
+ * \return A UTF-8 string view as an `AMbyteSpan` struct.
  * \internal
  *
  * # Safety
  * actor_id must be a valid pointer to an AMactorId
  */
-const char *AMactorIdStr(const struct AMactorId *actor_id);
+struct AMbyteSpan AMactorIdStr(const struct AMactorId *actor_id);
 
 /**
  * \memberof AMchange
@@ -686,6 +688,7 @@ const char *AMactorIdStr(const struct AMactorId *actor_id);
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * change must be a valid pointer to an AMchange
  */
@@ -744,6 +747,7 @@ struct AMbyteSpan AMchangeExtraBytes(const struct AMchange *change);
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * src must be a byte array of size `>= count`
  */
@@ -796,14 +800,14 @@ uint64_t AMchangeMaxOp(const struct AMchange *change);
  * \brief Gets the message of a change.
  *
  * \param[in] change A pointer to an `AMchange` struct.
- * \return A UTF-8 string or `NULL`.
+ * \return A UTF-8 string view as an `AMbyteSpan` struct.
  * \pre \p change `!= NULL`.
  * \internal
  *
  * # Safety
  * change must be a valid pointer to an AMchange
  */
-const char *AMchangeMessage(const struct AMchange *change);
+struct AMbyteSpan AMchangeMessage(const struct AMchange *change);
 
 /**
  * \memberof AMchange
@@ -888,6 +892,7 @@ struct AMbyteSpan AMchangeRawBytes(const struct AMchange *change);
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * src must be a byte array of size `>= count`
  */
@@ -944,6 +949,7 @@ ptrdiff_t AMchangeHashesCmp(const struct AMchangeHashes *change_hashes1, const s
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * src must be an AMbyteSpan array of size `>= count`
  */
@@ -1082,6 +1088,7 @@ bool AMchangesEqual(const struct AMchanges *changes1, const struct AMchanges *ch
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * src must be an AMbyteSpan array of size `>= count`
  */
@@ -1181,6 +1188,7 @@ struct AMchanges AMchangesRewound(const struct AMchanges *changes);
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * changes must be a valid pointer to an AMchanges.
@@ -1199,6 +1207,7 @@ struct AMresult *AMapplyChanges(struct AMdoc *doc, const struct AMchanges *chang
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  */
@@ -1214,6 +1223,7 @@ struct AMresult *AMclone(const struct AMdoc *doc);
  *         `AMdoc` struct.
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
+ * \internal
  *
  * # Safety
  * actor_id must be a valid pointer to an AMactorId or std::ptr::null()
@@ -1226,7 +1236,7 @@ struct AMresult *AMcreate(const struct AMactorId *actor_id);
  *        message and/or *nix timestamp (milliseconds).
  *
  * \param[in,out] doc A pointer to an `AMdoc` struct.
- * \param[in] message A UTF-8 string or `NULL`.
+ * \param[in] message A UTF-8 string view as an `AMbyteSpan` struct.
  * \param[in] timestamp A pointer to a 64-bit integer or `NULL`.
  * \return A pointer to an `AMresult` struct containing an `AMchangeHashes`
  *         with one element.
@@ -1234,10 +1244,11 @@ struct AMresult *AMcreate(const struct AMactorId *actor_id);
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  */
-struct AMresult *AMcommit(struct AMdoc *doc, const char *message, const int64_t *timestamp);
+struct AMresult *AMcommit(struct AMdoc *doc, struct AMbyteSpan message, const int64_t *timestamp);
 
 /**
  * \memberof AMdoc
@@ -1270,6 +1281,7 @@ bool AMequal(struct AMdoc *doc1, struct AMdoc *doc2);
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * heads must be a valid pointer to an AMchangeHashes or std::ptr::null()
@@ -1290,6 +1302,7 @@ struct AMresult *AMfork(struct AMdoc *doc, const struct AMchangeHashes *heads);
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * sync_state must be a valid pointer to an AMsyncState
@@ -1327,6 +1340,7 @@ struct AMresult *AMgetActorId(const struct AMdoc *doc);
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * src must be a byte array of size `>= automerge::types::HASH_SIZE`
@@ -1344,6 +1358,7 @@ struct AMresult *AMgetChangeByHash(struct AMdoc *doc, const uint8_t *src, size_t
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  */
@@ -1362,6 +1377,7 @@ struct AMresult *AMgetChanges(struct AMdoc *doc, const struct AMchangeHashes *ha
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc1 must be a valid pointer to an AMdoc
  * doc2 must be a valid pointer to an AMdoc
@@ -1379,6 +1395,7 @@ struct AMresult *AMgetChangesAdded(struct AMdoc *doc1, struct AMdoc *doc2);
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  */
@@ -1397,6 +1414,7 @@ struct AMresult *AMgetHeads(struct AMdoc *doc);
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * heads must be a valid pointer to an AMchangeHashes or std::ptr::null()
@@ -1414,6 +1432,7 @@ struct AMresult *AMgetMissingDeps(struct AMdoc *doc, const struct AMchangeHashes
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  */
@@ -1432,6 +1451,7 @@ struct AMresult *AMgetLastLocalChange(struct AMdoc *doc);
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
@@ -1453,6 +1473,7 @@ struct AMresult *AMkeys(const struct AMdoc *doc, const struct AMobjId *obj_id, c
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * src must be a byte array of size `>= count`
  */
@@ -1473,6 +1494,7 @@ struct AMresult *AMload(const uint8_t *src, size_t count);
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * src must be a byte array of size `>= count`
@@ -1493,6 +1515,7 @@ struct AMresult *AMloadIncremental(struct AMdoc *doc, const uint8_t *src, size_t
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * dest must be a valid pointer to an AMdoc
  * src must be a valid pointer to an AMdoc
@@ -1548,6 +1571,7 @@ AMobjType AMobjObjType(const struct AMdoc *doc, const struct AMobjId *obj_id);
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
@@ -1617,6 +1641,7 @@ size_t AMrollback(struct AMdoc *doc);
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  */
@@ -1634,6 +1659,7 @@ struct AMresult *AMsave(struct AMdoc *doc);
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  */
@@ -1651,6 +1677,7 @@ struct AMresult *AMsaveIncremental(struct AMdoc *doc);
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * actor_id must be a valid pointer to an AMactorId
@@ -1679,6 +1706,7 @@ struct AMresult *AMsetActorId(struct AMdoc *doc, const struct AMactorId *actor_i
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
@@ -1697,7 +1725,7 @@ struct AMresult *AMsplice(struct AMdoc *doc, const struct AMobjId *obj_id, size_
  *                `SIZE_MAX` to indicate one past its end.
  * \param[in] del The number of characters to delete or `SIZE_MAX` to indicate
  *                all of them.
- * \param[in] text A UTF-8 string.
+ * \param[in] text A UTF-8 string view as an `AMbyteSpan` struct.
  * \return A pointer to an `AMresult` struct containing a void.
  * \pre \p doc `!= NULL`.
  * \pre `0 <=` \p pos `<= AMobjSize(`\p obj_id`)` or \p pos `== SIZE_MAX`.
@@ -1705,12 +1733,12 @@ struct AMresult *AMsplice(struct AMdoc *doc, const struct AMobjId *obj_id, size_
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
- * text must be a null-terminated array of `c_char` or NULL.
  */
-struct AMresult *AMspliceText(struct AMdoc *doc, const struct AMobjId *obj_id, size_t pos, size_t del, const char *text);
+struct AMresult *AMspliceText(struct AMdoc *doc, const struct AMobjId *obj_id, size_t pos, size_t del, struct AMbyteSpan text);
 
 /**
  * \memberof AMdoc
@@ -1725,6 +1753,7 @@ struct AMresult *AMspliceText(struct AMdoc *doc, const struct AMobjId *obj_id, s
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
@@ -1746,6 +1775,7 @@ struct AMresult *AMtext(const struct AMdoc *doc, const struct AMobjId *obj_id, c
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
@@ -1768,6 +1798,7 @@ struct AMresult *AMlistDelete(struct AMdoc *doc, const struct AMobjId *obj_id, s
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
@@ -1792,6 +1823,7 @@ struct AMresult *AMlistGet(const struct AMdoc *doc, const struct AMobjId *obj_id
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
@@ -1815,6 +1847,7 @@ struct AMresult *AMlistGetAll(const struct AMdoc *doc, const struct AMobjId *obj
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
@@ -1840,6 +1873,7 @@ struct AMresult *AMlistIncrement(struct AMdoc *doc, const struct AMobjId *obj_id
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
@@ -1868,6 +1902,7 @@ struct AMresult *AMlistPutBool(struct AMdoc *doc, const struct AMobjId *obj_id, 
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
@@ -1899,6 +1934,7 @@ struct AMresult *AMlistPutBytes(struct AMdoc *doc,
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
@@ -1924,6 +1960,7 @@ struct AMresult *AMlistPutCounter(struct AMdoc *doc, const struct AMobjId *obj_i
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
@@ -1949,6 +1986,7 @@ struct AMresult *AMlistPutF64(struct AMdoc *doc, const struct AMobjId *obj_id, s
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
@@ -1973,6 +2011,7 @@ struct AMresult *AMlistPutInt(struct AMdoc *doc, const struct AMobjId *obj_id, s
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
@@ -2000,6 +2039,7 @@ struct AMresult *AMlistPutNull(struct AMdoc *doc, const struct AMobjId *obj_id, 
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
@@ -2018,7 +2058,7 @@ struct AMresult *AMlistPutObject(struct AMdoc *doc, const struct AMobjId *obj_id
  *                  `== true`.
  * \param[in] insert A flag to insert \p value before \p index instead of
  *            writing \p value over \p index.
- * \param[in] value A UTF-8 string.
+ * \param[in] value A UTF-8 string view as an `AMbyteSpan` struct.
  * \return A pointer to an `AMresult` struct containing a void.
  * \pre \p doc `!= NULL`.
  * \pre `0 <=` \p index `<= AMobjSize(`\p obj_id`)` or \p index `== SIZE_MAX`.
@@ -2026,12 +2066,13 @@ struct AMresult *AMlistPutObject(struct AMdoc *doc, const struct AMobjId *obj_id
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
  * value must be a null-terminated array of `c_char`
  */
-struct AMresult *AMlistPutStr(struct AMdoc *doc, const struct AMobjId *obj_id, size_t index, bool insert, const char *value);
+struct AMresult *AMlistPutStr(struct AMdoc *doc, const struct AMobjId *obj_id, size_t index, bool insert, struct AMbyteSpan value);
 
 /**
  * \memberof AMdoc
@@ -2053,6 +2094,7 @@ struct AMresult *AMlistPutStr(struct AMdoc *doc, const struct AMobjId *obj_id, s
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
@@ -2078,6 +2120,7 @@ struct AMresult *AMlistPutTimestamp(struct AMdoc *doc, const struct AMobjId *obj
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
@@ -2103,6 +2146,7 @@ struct AMresult *AMlistPutUint(struct AMdoc *doc, const struct AMobjId *obj_id, 
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
@@ -2283,19 +2327,20 @@ struct AMlistItems AMlistItemsRewound(const struct AMlistItems *list_items);
  *
  * \param[in,out] doc A pointer to an `AMdoc` struct.
  * \param[in] obj_id A pointer to an `AMobjId` struct or `AM_ROOT`.
- * \param[in] key A UTF-8 string key for the map object identified by \p obj_id.
+ * \param[in] key A UTF-8 string view key for the map object identified by
+ *                \p obj_id as an `AMbyteSpan` struct.
  * \return A pointer to an `AMresult` struct containing a void.
  * \pre \p doc `!= NULL`.
  * \pre \p key `!= NULL`.
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
- * key must be a c string of the map key to be used
  */
-struct AMresult *AMmapDelete(struct AMdoc *doc, const struct AMobjId *obj_id, const char *key);
+struct AMresult *AMmapDelete(struct AMdoc *doc, const struct AMobjId *obj_id, struct AMbyteSpan key);
 
 /**
  * \memberof AMdoc
@@ -2303,8 +2348,8 @@ struct AMresult *AMmapDelete(struct AMdoc *doc, const struct AMobjId *obj_id, co
  *
  * \param[in] doc A pointer to an `AMdoc` struct.
  * \param[in] obj_id A pointer to an `AMobjId` struct or `AM_ROOT`.
- * \param[in] key A UTF-8 string key for the map object identified by
- *                \p obj_id.
+ * \param[in] key A UTF-8 string view key for the map object identified by
+ *                \p obj_id as an `AMbyteSpan` struct.
  * \param[in] heads A pointer to an `AMchangeHashes` struct for a historical
  *                  value or `NULL` for the current value.
  * \return A pointer to an `AMresult` struct that doesn't contain a void.
@@ -2313,13 +2358,13 @@ struct AMresult *AMmapDelete(struct AMdoc *doc, const struct AMobjId *obj_id, co
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
- * key must be a c string of the map key to be used
  * heads must be a valid pointer to an AMchangeHashes or std::ptr::null()
  */
-struct AMresult *AMmapGet(const struct AMdoc *doc, const struct AMobjId *obj_id, const char *key, const struct AMchangeHashes *heads);
+struct AMresult *AMmapGet(const struct AMdoc *doc, const struct AMobjId *obj_id, struct AMbyteSpan key, const struct AMchangeHashes *heads);
 
 /**
  * \memberof AMdoc
@@ -2328,8 +2373,8 @@ struct AMresult *AMmapGet(const struct AMdoc *doc, const struct AMobjId *obj_id,
  *
  * \param[in] doc A pointer to an `AMdoc` struct.
  * \param[in] obj_id A pointer to an `AMobjId` struct or `AM_ROOT`.
- * \param[in] key A UTF-8 string key for the map object identified by
- *                \p obj_id.
+ * \param[in] key A UTF-8 string view key for the map object identified by
+ *                \p obj_id as an `AMbyteSpan` struct.
  * \param[in] heads A pointer to an `AMchangeHashes` struct for a historical
  *                  last value or `NULL` for the current last value.
  * \return A pointer to an `AMresult` struct containing an `AMobjItems` struct.
@@ -2338,13 +2383,16 @@ struct AMresult *AMmapGet(const struct AMdoc *doc, const struct AMobjId *obj_id,
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
- * key must be a c string of the map key to be used
  * heads must be a valid pointer to an AMchangeHashes or std::ptr::null()
  */
-struct AMresult *AMmapGetAll(const struct AMdoc *doc, const struct AMobjId *obj_id, const char *key, const struct AMchangeHashes *heads);
+struct AMresult *AMmapGetAll(const struct AMdoc *doc,
+                             const struct AMobjId *obj_id,
+                             struct AMbyteSpan key,
+                             const struct AMchangeHashes *heads);
 
 /**
  * \memberof AMdoc
@@ -2352,7 +2400,8 @@ struct AMresult *AMmapGetAll(const struct AMdoc *doc, const struct AMobjId *obj_
  *
  * \param[in,out] doc A pointer to an `AMdoc` struct.
  * \param[in] obj_id A pointer to an `AMobjId` struct or `AM_ROOT`.
- * \param[in] key A UTF-8 string key for the map object identified by \p obj_id.
+ * \param[in] key A UTF-8 string view key for the map object identified by
+ *                \p obj_id as an `AMbyteSpan` struct.
  * \param[in] value A 64-bit signed integer.
  * \return A pointer to an `AMresult` struct containing a void.
  * \pre \p doc `!= NULL`.
@@ -2360,12 +2409,12 @@ struct AMresult *AMmapGetAll(const struct AMdoc *doc, const struct AMobjId *obj_
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
- * key must be a c string of the map key to be used
  */
-struct AMresult *AMmapIncrement(struct AMdoc *doc, const struct AMobjId *obj_id, const char *key, int64_t value);
+struct AMresult *AMmapIncrement(struct AMdoc *doc, const struct AMobjId *obj_id, struct AMbyteSpan key, int64_t value);
 
 /**
  * \memberof AMdoc
@@ -2373,7 +2422,8 @@ struct AMresult *AMmapIncrement(struct AMdoc *doc, const struct AMobjId *obj_id,
  *
  * \param[in,out] doc A pointer to an `AMdoc` struct.
  * \param[in] obj_id A pointer to an `AMobjId` struct or `AM_ROOT`.
- * \param[in] key A UTF-8 string key for the map object identified by \p obj_id.
+ * \param[in] key A UTF-8 string view key for the map object identified by
+ *                \p obj_id as an `AMbyteSpan` struct.
  * \param[in] value A boolean.
  * \return A pointer to an `AMresult` struct containing a void.
  * \pre \p doc `!= NULL`.
@@ -2381,12 +2431,12 @@ struct AMresult *AMmapIncrement(struct AMdoc *doc, const struct AMobjId *obj_id,
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
- * key must be a c string of the map key to be used
  */
-struct AMresult *AMmapPutBool(struct AMdoc *doc, const struct AMobjId *obj_id, const char *key, bool value);
+struct AMresult *AMmapPutBool(struct AMdoc *doc, const struct AMobjId *obj_id, struct AMbyteSpan key, bool value);
 
 /**
  * \memberof AMdoc
@@ -2394,7 +2444,8 @@ struct AMresult *AMmapPutBool(struct AMdoc *doc, const struct AMobjId *obj_id, c
  *
  * \param[in,out] doc A pointer to an `AMdoc` struct.
  * \param[in] obj_id A pointer to an `AMobjId` struct or `AM_ROOT`.
- * \param[in] key A UTF-8 string key for the map object identified by \p obj_id.
+ * \param[in] key A UTF-8 string view key for the map object identified by
+ *                \p obj_id as an `AMbyteSpan` struct.
  * \param[in] src A pointer to an array of bytes.
  * \param[in] count The number of bytes to copy from \p src.
  * \return A pointer to an `AMresult` struct containing a void.
@@ -2405,13 +2456,13 @@ struct AMresult *AMmapPutBool(struct AMdoc *doc, const struct AMobjId *obj_id, c
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
- * key must be a c string of the map key to be used
  * src must be a byte array of size `>= count`
  */
-struct AMresult *AMmapPutBytes(struct AMdoc *doc, const struct AMobjId *obj_id, const char *key, const uint8_t *src, size_t count);
+struct AMresult *AMmapPutBytes(struct AMdoc *doc, const struct AMobjId *obj_id, struct AMbyteSpan key, const uint8_t *src, size_t count);
 
 /**
  * \memberof AMdoc
@@ -2419,7 +2470,8 @@ struct AMresult *AMmapPutBytes(struct AMdoc *doc, const struct AMobjId *obj_id, 
  *
  * \param[in,out] doc A pointer to an `AMdoc` struct.
  * \param[in] obj_id A pointer to an `AMobjId` struct or `AM_ROOT`.
- * \param[in] key A UTF-8 string key for the map object identified by \p obj_id.
+ * \param[in] key A UTF-8 string view key for the map object identified by
+ *                \p obj_id as an `AMbyteSpan` struct.
  * \param[in] value A 64-bit signed integer.
  * \return A pointer to an `AMresult` struct containing a void.
  * \pre \p doc `!= NULL`.
@@ -2427,12 +2479,12 @@ struct AMresult *AMmapPutBytes(struct AMdoc *doc, const struct AMobjId *obj_id, 
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
- * key must be a c string of the map key to be used
  */
-struct AMresult *AMmapPutCounter(struct AMdoc *doc, const struct AMobjId *obj_id, const char *key, int64_t value);
+struct AMresult *AMmapPutCounter(struct AMdoc *doc, const struct AMobjId *obj_id, struct AMbyteSpan key, int64_t value);
 
 /**
  * \memberof AMdoc
@@ -2440,19 +2492,20 @@ struct AMresult *AMmapPutCounter(struct AMdoc *doc, const struct AMobjId *obj_id
  *
  * \param[in,out] doc A pointer to an `AMdoc` struct.
  * \param[in] obj_id A pointer to an `AMobjId` struct or `AM_ROOT`.
- * \param[in] key A UTF-8 string key for the map object identified by \p obj_id.
+ * \param[in] key A UTF-8 string view key for the map object identified by
+ *                \p obj_id as an `AMbyteSpan` struct.
  * \return A pointer to an `AMresult` struct containing a void.
  * \pre \p doc `!= NULL`.
  * \pre \p key `!= NULL`.
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
- * key must be a c string of the map key to be used
  */
-struct AMresult *AMmapPutNull(struct AMdoc *doc, const struct AMobjId *obj_id, const char *key);
+struct AMresult *AMmapPutNull(struct AMdoc *doc, const struct AMobjId *obj_id, struct AMbyteSpan key);
 
 /**
  * \memberof AMdoc
@@ -2460,7 +2513,8 @@ struct AMresult *AMmapPutNull(struct AMdoc *doc, const struct AMobjId *obj_id, c
  *
  * \param[in,out] doc A pointer to an `AMdoc` struct.
  * \param[in] obj_id A pointer to an `AMobjId` struct or `AM_ROOT`.
- * \param[in] key A UTF-8 string key for the map object identified by \p obj_id.
+ * \param[in] key A UTF-8 string view key for the map object identified by
+ *                \p obj_id as an `AMbyteSpan` struct.
  * \param[in] obj_type An `AMobjIdType` enum tag.
  * \return A pointer to an `AMresult` struct containing a pointer to an
  *         `AMobjId` struct.
@@ -2470,12 +2524,12 @@ struct AMresult *AMmapPutNull(struct AMdoc *doc, const struct AMobjId *obj_id, c
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
- * key must be a c string of the map key to be used
  */
-struct AMresult *AMmapPutObject(struct AMdoc *doc, const struct AMobjId *obj_id, const char *key, AMobjType obj_type);
+struct AMresult *AMmapPutObject(struct AMdoc *doc, const struct AMobjId *obj_id, struct AMbyteSpan key, AMobjType obj_type);
 
 /**
  * \memberof AMdoc
@@ -2483,7 +2537,8 @@ struct AMresult *AMmapPutObject(struct AMdoc *doc, const struct AMobjId *obj_id,
  *
  * \param[in,out] doc A pointer to an `AMdoc` struct.
  * \param[in] obj_id A pointer to an `AMobjId` struct or `AM_ROOT`.
- * \param[in] key A UTF-8 string key for the map object identified by \p obj_id.
+ * \param[in] key A UTF-8 string view key for the map object identified by
+ *                \p obj_id as an `AMbyteSpan` struct.
  * \param[in] value A 64-bit float.
  * \return A pointer to an `AMresult` struct containing a void.
  * \pre \p doc `!= NULL`.
@@ -2491,12 +2546,12 @@ struct AMresult *AMmapPutObject(struct AMdoc *doc, const struct AMobjId *obj_id,
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
- * key must be a c string of the map key to be used
  */
-struct AMresult *AMmapPutF64(struct AMdoc *doc, const struct AMobjId *obj_id, const char *key, double value);
+struct AMresult *AMmapPutF64(struct AMdoc *doc, const struct AMobjId *obj_id, struct AMbyteSpan key, double value);
 
 /**
  * \memberof AMdoc
@@ -2504,7 +2559,8 @@ struct AMresult *AMmapPutF64(struct AMdoc *doc, const struct AMobjId *obj_id, co
  *
  * \param[in,out] doc A pointer to an `AMdoc` struct.
  * \param[in] obj_id A pointer to an `AMobjId` struct or `AM_ROOT`.
- * \param[in] key A UTF-8 string key for the map object identified by \p obj_id.
+ * \param[in] key A UTF-8 string view key for the map object identified by
+ *                \p obj_id as an `AMbyteSpan` struct.
  * \param[in] value A 64-bit signed integer.
  * \return A pointer to an `AMresult` struct containing a void.
  * \pre \p doc `!= NULL`.
@@ -2512,12 +2568,12 @@ struct AMresult *AMmapPutF64(struct AMdoc *doc, const struct AMobjId *obj_id, co
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
- * key must be a c string of the map key to be used
  */
-struct AMresult *AMmapPutInt(struct AMdoc *doc, const struct AMobjId *obj_id, const char *key, int64_t value);
+struct AMresult *AMmapPutInt(struct AMdoc *doc, const struct AMobjId *obj_id, struct AMbyteSpan key, int64_t value);
 
 /**
  * \memberof AMdoc
@@ -2525,22 +2581,21 @@ struct AMresult *AMmapPutInt(struct AMdoc *doc, const struct AMobjId *obj_id, co
  *
  * \param[in,out] doc A pointer to an `AMdoc` struct.
  * \param[in] obj_id A pointer to an `AMobjId` struct or `AM_ROOT`.
- * \param[in] key A UTF-8 string key for the map object identified by \p obj_id.
- * \param[in] value A UTF-8 string.
+ * \param[in] key A UTF-8 string view key for the map object identified by
+ *                \p obj_id as an `AMbyteSpan` struct.
+ * \param[in] value A UTF-8 string view as an `AMbyteSpan` struct.
  * \return A pointer to an `AMresult` struct containing a void.
  * \pre \p doc `!= NULL`.
  * \pre \p key `!= NULL`.
- * \pre \p value `!= NULL`.
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
- * key must be a c string of the map key to be used
- * value must be a null-terminated array of `c_char`
  */
-struct AMresult *AMmapPutStr(struct AMdoc *doc, const struct AMobjId *obj_id, const char *key, const char *value);
+struct AMresult *AMmapPutStr(struct AMdoc *doc, const struct AMobjId *obj_id, struct AMbyteSpan key, struct AMbyteSpan value);
 
 /**
  * \memberof AMdoc
@@ -2549,7 +2604,8 @@ struct AMresult *AMmapPutStr(struct AMdoc *doc, const struct AMobjId *obj_id, co
  *
  * \param[in,out] doc A pointer to an `AMdoc` struct.
  * \param[in] obj_id A pointer to an `AMobjId` struct or `AM_ROOT`.
- * \param[in] key A UTF-8 string key for the map object identified by \p obj_id.
+ * \param[in] key A UTF-8 string view key for the map object identified by
+ *                \p obj_id as an `AMbyteSpan` struct.
  * \param[in] value A 64-bit signed integer.
  * \return A pointer to an `AMresult` struct containing a void.
  * \pre \p doc `!= NULL`.
@@ -2557,12 +2613,12 @@ struct AMresult *AMmapPutStr(struct AMdoc *doc, const struct AMobjId *obj_id, co
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
- * key must be a c string of the map key to be used
  */
-struct AMresult *AMmapPutTimestamp(struct AMdoc *doc, const struct AMobjId *obj_id, const char *key, int64_t value);
+struct AMresult *AMmapPutTimestamp(struct AMdoc *doc, const struct AMobjId *obj_id, struct AMbyteSpan key, int64_t value);
 
 /**
  * \memberof AMdoc
@@ -2570,7 +2626,8 @@ struct AMresult *AMmapPutTimestamp(struct AMdoc *doc, const struct AMobjId *obj_
  *
  * \param[in,out] doc A pointer to an `AMdoc` struct.
  * \param[in] obj_id A pointer to an `AMobjId` struct or `AM_ROOT`.
- * \param[in] key A UTF-8 string key for the map object identified by \p obj_id.
+ * \param[in] key A UTF-8 string view key for the map object identified by
+ *                \p obj_id as an `AMbyteSpan` struct.
  * \param[in] value A 64-bit unsigned integer.
  * \return A pointer to an `AMresult` struct containing a void.
  * \pre \p doc `!= NULL`.
@@ -2578,12 +2635,12 @@ struct AMresult *AMmapPutTimestamp(struct AMdoc *doc, const struct AMobjId *obj_
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
- * key must be a c string of the map key to be used
  */
-struct AMresult *AMmapPutUint(struct AMdoc *doc, const struct AMobjId *obj_id, const char *key, uint64_t value);
+struct AMresult *AMmapPutUint(struct AMdoc *doc, const struct AMobjId *obj_id, struct AMbyteSpan key, uint64_t value);
 
 /**
  * \memberof AMdoc
@@ -2592,19 +2649,19 @@ struct AMresult *AMmapPutUint(struct AMdoc *doc, const struct AMobjId *obj_id, c
  *
  * \param[in] doc A pointer to an `AMdoc` struct.
  * \param[in] obj_id A pointer to an `AMobjId` struct or `AM_ROOT`.
- * \param[in] begin The first key in a subrange or `NULL` to indicate the
+ * \param[in] begin The first key in a subrange or `AMstr(NULL)` to indicate the
  *                  absolute first key.
- * \param[in] end The key one past the last key in a subrange or `NULL` to
+ * \param[in] end The key one past the last key in a subrange or `AMstr(NULL)` to
  *                indicate one past the absolute last key.
  * \param[in] heads A pointer to an `AMchangeHashes` struct for historical
  *                  keys and values or `NULL` for current keys and values.
  * \return A pointer to an `AMresult` struct containing an `AMmapItems`
  *         struct.
  * \pre \p doc `!= NULL`.
- * \pre `strcmp(`\p begin, \p end`) != 1` if \p begin `!= NULL` and \p end `!= NULL`.
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
@@ -2612,8 +2669,8 @@ struct AMresult *AMmapPutUint(struct AMdoc *doc, const struct AMobjId *obj_id, c
  */
 struct AMresult *AMmapRange(const struct AMdoc *doc,
                             const struct AMobjId *obj_id,
-                            const char *begin,
-                            const char *end,
+                            struct AMbyteSpan begin,
+                            struct AMbyteSpan end,
                             const struct AMchangeHashes *heads);
 
 /**
@@ -2621,14 +2678,14 @@ struct AMresult *AMmapRange(const struct AMdoc *doc,
  * \brief Gets the key of an item in a map object.
  *
  * \param[in] map_item A pointer to an `AMmapItem` struct.
- * \return A 64-bit unsigned integer.
+ * \return An `AMbyteSpan` view of a UTF-8 string.
  * \pre \p map_item `!= NULL`.
  * \internal
  *
  * # Safety
  * map_item must be a valid pointer to an AMmapItem
  */
-const char *AMmapItemKey(const struct AMmapItem *map_item);
+struct AMbyteSpan AMmapItemKey(const struct AMmapItem *map_item);
 
 /**
  * \memberof AMmapItem
@@ -3006,14 +3063,14 @@ bool AMvalueEqual(const union AMvalue *value1, const union AMvalue *value2);
  * \brief Gets a result's error message string.
  *
  * \param[in] result A pointer to an `AMresult` struct.
- * \return A UTF-8 string value or `NULL`.
+ * \return A UTF-8 string view as an `AMbyteSpan` struct.
  * \pre \p result `!= NULL`.
  * \internal
  *
  * # Safety
  * result must be a valid pointer to an AMresult
  */
-const char *AMerrorMessage(const struct AMresult *result);
+struct AMbyteSpan AMerrorMessage(const struct AMresult *result);
 
 /**
  * \memberof AMresult
@@ -3134,6 +3191,18 @@ struct AMresult *AMpop(struct AMresultStack **stack);
 union AMvalue AMpush(struct AMresultStack **stack, struct AMresult *result, uint8_t discriminant, AMpushCallback callback);
 
 /**
+ * \brief Creates a string view from a C string.
+ *
+ * \param[in] c_str A UTF-8 C string.
+ * \return A UTF-8 string view as an `AMbyteSpan` struct.
+ * \internal
+ *
+ * #Safety
+ * c_str must be a null-terminated array of `c_char`
+ */
+struct AMbyteSpan AMstr(const char *c_str);
+
+/**
  * \memberof AMstrs
  * \brief Advances an iterator over a sequence of UTF-8 strings by at most
  *        \p |n| positions where the sign of \p n is relative to the
@@ -3179,15 +3248,15 @@ ptrdiff_t AMstrsCmp(const struct AMstrs *strs1, const struct AMstrs *strs2);
  * \param[in,out] strs A pointer to an `AMstrs` struct.
  * \param[in] n The direction (\p -n -> opposite, \p n -> same) and maximum
  *              number of positions to advance.
- * \return A UTF-8 string that's `NULL` when \p strs was previously advanced
- *         past its forward/reverse limit.
+ * \return A UTF-8 string view as an `AMbyteSpan` struct that's `AMstr(NULL)`
+ *         when \p strs was previously advanced past its forward/reverse limit.
  * \pre \p strs `!= NULL`.
  * \internal
  *
  * #Safety
  * strs must be a valid pointer to an AMstrs
  */
-const char *AMstrsNext(struct AMstrs *strs, ptrdiff_t n);
+struct AMbyteSpan AMstrsNext(struct AMstrs *strs, ptrdiff_t n);
 
 /**
  * \memberof AMstrs
@@ -3198,15 +3267,15 @@ const char *AMstrsNext(struct AMstrs *strs, ptrdiff_t n);
  * \param[in,out] strs A pointer to an `AMstrs` struct.
  * \param[in] n The direction (\p -n -> opposite, \p n -> same) and maximum
  *              number of positions to advance.
- * \return A UTF-8 string that's `NULL` when \p strs is presently advanced
- *         past its forward/reverse limit.
+ * \return A UTF-8 string view as an `AMbyteSpan` struct that's `AMstr(NULL)`
+ *         when \p strs is presently advanced past its forward/reverse limit.
  * \pre \p strs `!= NULL`.
  * \internal
  *
  * #Safety
  * strs must be a valid pointer to an AMstrs
  */
-const char *AMstrsPrev(struct AMstrs *strs, ptrdiff_t n);
+struct AMbyteSpan AMstrsPrev(struct AMstrs *strs, ptrdiff_t n);
 
 /**
  * \memberof AMstrs
@@ -3415,6 +3484,7 @@ struct AMchanges AMsyncMessageChanges(const struct AMsyncMessage *sync_message);
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * src must be a byte array of size `>= count`
  */
@@ -3431,6 +3501,7 @@ struct AMresult *AMsyncMessageDecode(const uint8_t *src, size_t count);
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * sync_message must be a valid pointer to an AMsyncMessage
  */
@@ -3492,6 +3563,7 @@ struct AMchangeHashes AMsyncMessageNeeds(const struct AMsyncMessage *sync_messag
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * src must be a byte array of size `>= count`
  */
@@ -3508,6 +3580,7 @@ struct AMresult *AMsyncStateDecode(const uint8_t *src, size_t count);
  * \warning The returned `AMresult` struct must be deallocated with `AMfree()`
  *          in order to prevent a memory leak.
  * \internal
+ *
  * # Safety
  * sync_state must be a valid pointer to an AMsyncState
  */
