@@ -7,7 +7,7 @@ import (
 )
 
 func ExampleAs() {
-	doc := automerge.New(nil)
+	doc := automerge.New()
 	doc.Path("isValid").Set(true)
 
 	b, err := automerge.As[bool](doc.Path("isValid").Get())
@@ -27,7 +27,7 @@ func ExampleAs() {
 }
 
 func ExampleList_Iter() {
-	doc := automerge.New(nil)
+	doc := automerge.New()
 	list := doc.Path("list").List()
 
 	iter := list.Iter()
@@ -44,7 +44,7 @@ func ExampleList_Iter() {
 }
 
 func ExampleMap_Iter() {
-	doc := automerge.New(nil)
+	doc := automerge.New()
 	m := doc.Path("map").Map()
 
 	iter := m.Iter()
@@ -61,7 +61,7 @@ func ExampleMap_Iter() {
 }
 
 func ExampleSyncState() {
-	doc := automerge.New(nil)
+	doc := automerge.New()
 	syncState := automerge.NewSyncState(doc)
 
 	docUpdated := make(chan bool)
@@ -101,7 +101,7 @@ loop:
 
 /*
 func ExampleDoc_SaveIncremental() {
-	doc1 := automerge.New(nil)
+	doc1 := automerge.New()
 	// make initial changes
 
 	changes := make(chan []byte)

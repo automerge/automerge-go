@@ -4,8 +4,12 @@ package automerge
 
 /*
 #cgo LDFLAGS: -lautomerge
+#cgo CFLAGS: -I${SRCDIR}/deps/include -Wall
+
 #cgo darwin,arm64 LDFLAGS: -L${SRCDIR}/deps/darwin_arm64
-#cgo darwin,arm64 CFLAGS: -I${SRCDIR}/deps/darwin_arm64 -Wall
+#cgo darwin,amd64 LDFLAGS: -L${SRCDIR}/deps/darwin_amd64
+#cgo linux,arm64 LDFLAGS: -L${SRCDIR}/deps/linux_arm64 -lm
+#cgo linux,amd64 LDFLAGS: -L${SRCDIR}/deps/linux_amd64 -lm
 
 #include "automerge.h"
 #include <stdlib.h>
@@ -41,10 +45,9 @@ import (
 	"encoding/hex"
 	"fmt"
 	"runtime"
+	"sync"
 	"time"
 	"unsafe"
-
-	"github.com/sasha-s/go-deadlock"
 )
 
 // Kind represents the underlying type of a Value
@@ -148,7 +151,7 @@ func (a *ActorID) Cmp(b *ActorID) int {
 type Doc struct {
 	cDoc *C.AMdoc
 
-	m deadlock.Mutex
+	m sync.Mutex
 }
 
 func (d *Doc) lock() (*C.AMdoc, func()) {
@@ -171,16 +174,9 @@ func (d *Doc) init(r *C.AMresult) error {
 	return nil
 }
 
-// New creates a new document with the given actorId.
-// If actorID == nil then a new random actor id will be created.
-func New(actorID *ActorID) *Doc {
-	var a *C.AMactorId
-	if actorID != nil {
-		defer runtime.KeepAlive(actorID)
-		a = actorID.v
-	}
-
-	d, err := call[*Doc](C.AMcreate(a))
+// New creates a new empty document with a randomly generated actorId.
+func New() *Doc {
+	d, err := call[*Doc](C.AMcreate(nil))
 	// This call cannot error
 	if err != nil {
 		panic(err)
@@ -350,7 +346,7 @@ func (d *Doc) SetActorID(ai *ActorID) error {
 
 func toByteSpan(b []byte) (C.AMbyteSpan, func()) {
 	cBytes := C.CBytes(b)
-	return C.AMbyteSpan{src: (*C.uchar)(cBytes), count: C.ulong(len(b))}, func() {
+	return C.AMbyteSpan{src: (*C.uchar)(cBytes), count: C.size_t(len(b))}, func() {
 		C.free(cBytes)
 	}
 }
@@ -447,7 +443,6 @@ func (cs *Changes) Save() []byte {
 
 	cs2 := C.AMchangesRewound(&cs.v)
 	defer runtime.KeepAlive(cs)
-	defer runtime.KeepAlive(cs2)
 	for {
 		c := C.AMchangesNext(&cs2, 1)
 		if c == (*C.AMchange)(C.NULL) {
@@ -606,19 +601,19 @@ func (m *Map) Set(key string, value any) error {
 	case []byte:
 		vBytes, free := toByteSpan(v)
 		defer free()
-		_, err = call[*void](C.AMmapPutBytes(cDoc, cObj, cKey, vBytes.src, vBytes.count))
+		_, err = call[*void](C.AMmapPutBytes(cDoc, cObj, cKey, vBytes))
 
 	case int64:
-		_, err = call[*void](C.AMmapPutInt(cDoc, cObj, cKey, C.longlong(v)))
+		_, err = call[*void](C.AMmapPutInt(cDoc, cObj, cKey, C.int64_t(v)))
 
 	case uint64:
-		_, err = call[*void](C.AMmapPutUint(cDoc, cObj, cKey, C.ulonglong(v)))
+		_, err = call[*void](C.AMmapPutUint(cDoc, cObj, cKey, C.uint64_t(v)))
 
 	case float64:
 		_, err = call[*void](C.AMmapPutF64(cDoc, cObj, cKey, C.double(v)))
 
 	case time.Time:
-		_, err = call[*void](C.AMmapPutTimestamp(cDoc, cObj, cKey, C.longlong(v.UnixMilli())))
+		_, err = call[*void](C.AMmapPutTimestamp(cDoc, cObj, cKey, C.int64_t(v.UnixMilli())))
 
 	case []any:
 		objID, err := call[*objID](C.AMmapPutObject(cDoc, cObj, cKey, C.AM_OBJ_TYPE_LIST))
@@ -673,7 +668,7 @@ func (m *Map) Set(key string, value any) error {
 			return fmt.Errorf("automerge.Map: tried to move an existing *automerge.Counter")
 		}
 
-		_, err = call[*void](C.AMmapPutCounter(cDoc, cObj, cKey, C.longlong(v.val)))
+		_, err = call[*void](C.AMmapPutCounter(cDoc, cObj, cKey, C.int64_t(v.val)))
 		if err == nil {
 			v.m = m
 			v.key = key
@@ -1002,7 +997,7 @@ func (l *List) Get(i int) (*Value, error) {
 	cDoc, cObj, unlock := l.lock()
 	defer unlock()
 
-	r := C.AMlistGet(cDoc, cObj, C.ulong(i), nil)
+	r := C.AMlistGet(cDoc, cObj, C.size_t(i), nil)
 	unlock()
 	v, err := createValue(l.doc, r)
 	if err != nil {
@@ -1031,7 +1026,7 @@ func (l *List) Set(idx int, value any) error {
 	if idx < 0 || idx >= l.Len() {
 		return fmt.Errorf("automerge.List: tried to write index %v beyond end of list length %v", idx, l.Len())
 	}
-	return l.put(C.ulong(idx), false, value)
+	return l.put(C.size_t(idx), false, value)
 }
 
 // Insert inserts the new values just before idx.
@@ -1040,7 +1035,7 @@ func (l *List) Insert(idx int, value ...any) error {
 		return fmt.Errorf("automerge.List: tried to write index %v beyond end of list length %v", idx, l.Len())
 	}
 	for i, v := range value {
-		if err := l.put(C.ulong(idx+i), true, v); err != nil {
+		if err := l.put(C.size_t(idx+i), true, v); err != nil {
 			return err
 		}
 	}
@@ -1056,7 +1051,7 @@ func (l *List) Delete(idx int) error {
 	cDoc, cObj, unlock := l.lock()
 	defer unlock()
 
-	_, err := call[*void](C.AMlistDelete(cDoc, cObj, C.ulong(idx)))
+	_, err := call[*void](C.AMlistDelete(cDoc, cObj, C.size_t(idx)))
 	return err
 
 }
@@ -1098,7 +1093,7 @@ func (l *List) GoString() string {
 	return sofar + "}"
 }
 
-func (l *List) put(i C.ulong, before bool, value any) error {
+func (l *List) put(i C.size_t, before bool, value any) error {
 	if l.objID == nil {
 		if l.path == nil {
 			return fmt.Errorf("automerge.List: tried to write to detached list")
@@ -1134,19 +1129,19 @@ func (l *List) put(i C.ulong, before bool, value any) error {
 	case []byte:
 		vBytes, free := toByteSpan(v)
 		defer free()
-		_, err = call[*void](C.AMlistPutBytes(cDoc, cObj, i, C.bool(before), vBytes.src, vBytes.count))
+		_, err = call[*void](C.AMlistPutBytes(cDoc, cObj, i, C.bool(before), vBytes))
 
 	case int64:
-		_, err = call[*void](C.AMlistPutInt(cDoc, cObj, i, C.bool(before), C.longlong(v)))
+		_, err = call[*void](C.AMlistPutInt(cDoc, cObj, i, C.bool(before), C.int64_t(v)))
 
 	case uint64:
-		_, err = call[*void](C.AMlistPutUint(cDoc, cObj, i, C.bool(before), C.ulonglong(v)))
+		_, err = call[*void](C.AMlistPutUint(cDoc, cObj, i, C.bool(before), C.uint64_t(v)))
 
 	case float64:
 		_, err = call[*void](C.AMlistPutF64(cDoc, cObj, i, C.bool(before), C.double(v)))
 
 	case time.Time:
-		_, err = call[*void](C.AMlistPutTimestamp(cDoc, cObj, i, C.bool(before), C.longlong(v.UnixMilli())))
+		_, err = call[*void](C.AMlistPutTimestamp(cDoc, cObj, i, C.bool(before), C.int64_t(v.UnixMilli())))
 
 	case []any:
 		objID, err := call[*objID](C.AMlistPutObject(cDoc, cObj, i, C.bool(before), C.AM_OBJ_TYPE_LIST))
@@ -1176,7 +1171,7 @@ func (l *List) put(i C.ulong, before bool, value any) error {
 			return fmt.Errorf("automerge.List: tried to move an attached *automerge.Text")
 		}
 
-		_, err = call[*void](C.AMlistPutCounter(cDoc, cObj, i, C.bool(before), C.longlong(v.val)))
+		_, err = call[*void](C.AMlistPutCounter(cDoc, cObj, i, C.bool(before), C.int64_t(v.val)))
 		if err == nil {
 			v.l = l
 			v.idx = int(i)
@@ -1340,7 +1335,7 @@ func (c *Counter) Inc(delta int64) error {
 	if c.l != nil {
 		cDoc, cObj, unlock := c.l.lock()
 		defer unlock()
-		_, err := call[*void](C.AMlistIncrement(cDoc, cObj, C.ulong(c.idx), C.longlong(delta)))
+		_, err := call[*void](C.AMlistIncrement(cDoc, cObj, C.size_t(c.idx), C.int64_t(delta)))
 		return err
 	}
 
@@ -1348,7 +1343,7 @@ func (c *Counter) Inc(delta int64) error {
 	defer free()
 	cDoc, cObj, unlock := c.m.lock()
 	defer unlock()
-	_, err := call[*void](C.AMmapIncrement(cDoc, cObj, cKey, C.longlong(delta)))
+	_, err := call[*void](C.AMmapIncrement(cDoc, cObj, cKey, C.int64_t(delta)))
 	return err
 }
 
@@ -1439,12 +1434,12 @@ func (t *Text) Set(s string) error {
 
 // Insert adds a substr at position pos in the Text
 func (t *Text) Insert(pos int, s string) error {
-	return t.splice(C.ulong(pos), 0, s)
+	return t.splice(C.size_t(pos), 0, s)
 }
 
 // Delete deletes del characters from position pos
 func (t *Text) Delete(pos int, del int) error {
-	return t.splice(C.ulong(pos), C.ulong(del), "")
+	return t.splice(C.size_t(pos), C.size_t(del), "")
 }
 
 // Append adds substr s at the end of the string
@@ -1455,10 +1450,10 @@ func (t *Text) Append(s string) error {
 // Splice deletes del characters at position pos, and inserts
 // substr s in their place.
 func (t *Text) Splice(pos int, del int, s string) error {
-	return t.splice(C.ulong(pos), C.ulong(del), s)
+	return t.splice(C.size_t(pos), C.size_t(del), s)
 }
 
-func (t *Text) splice(pos, del C.ulong, s string) error {
+func (t *Text) splice(pos, del C.size_t, s string) error {
 	if t.objID == nil {
 		if t.path == nil {
 			return fmt.Errorf("automerge.Text: tried to write to detached text")

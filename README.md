@@ -14,8 +14,11 @@ See the Go documentation at https://pkg.go.dev/github.com/ConradIrwin/automerge-
 
 ## Limitations
 
-Currently this only works on macOS with an M-series processor, adding more architectures
-will require cross-compiling [automerge-rs].
+automerge-go comes with precompiled libraries for linux and mac on amd64 (x86_64) and
+arm64.
+
+Supporting further architectures will require cross compiling automerge-rs and adding
+them to the deps/ directory.
 
 [automerge]: https://automerge.org
 [automerge-rs]: https://github.com/automerge/automerge-rs

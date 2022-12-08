@@ -1,0 +1,3 @@
+[submodule "deps/automerge-rs"]
+	path = deps/automerge-rs
+	url = https://github.com/automerge/automerge-rs

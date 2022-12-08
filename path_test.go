@@ -8,7 +8,7 @@ import (
 )
 
 func TestPath_Errors(t *testing.T) {
-	doc := automerge.New(nil)
+	doc := automerge.New()
 
 	require.PanicsWithError(t, "automerge: invalid path segment, expected string or int, got: bool(true)", func() {
 		doc.Path(true)
