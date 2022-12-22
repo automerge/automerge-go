@@ -1,4 +1,4 @@
-module github.com/ConradIrwin/automerge-go
+module github.com/automerge/automerge-go
 
 go 1.19
 
