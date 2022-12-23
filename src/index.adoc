@@ -1,6 +1,6 @@
 = Binary Document Format
 Alex Good <alex@memoryandthought.me>; Andrew Jeffery <andrewjeffery97@gmail.com>
-:descriptions: A specification of the automerge storage format
+:descriptions: A specification of the Automerge storage format
 :revremark: draft
 :toc:
 :toclevels: 4
@@ -8,12 +8,31 @@ Alex Good <alex@memoryandthought.me>; Andrew Jeffery <andrewjeffery97@gmail.com>
 
 == Introduction
 
-Automerge documents are a directed acyclic graph (DAG) of changes. Each change
-consists of an actor ID, a list of parent changes, and a list of operations.
-We refer to these conceptual structures as the "reference document", "reference
-change", and "reference operation" and collectively as the "reference data
-model". This specification describes a compressed storage format which can be
-mapped to the reference data model.
+Automerge is a library that allows people to collaboratively work together
+without a central co-ordination or a reliable connection.  It is a specific
+implementation of of a conflict-free replicated data type (or
+https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type[CRDT]).
+
+This document describes the storage format used when serializing Automerge
+documents and changes for storage or transfer.
+
+We strongly encourage people to use a library based on the reference
+implementation https://github.com/Automerge/Automerge-rs[Automerge-rs] (which is
+available as a
+https://github.com/Automerge/Automerge-rs/tree/main/rust/Automerge-c[C shared
+library] or a
+https://github.com/Automerge/Automerge-rs/tree/main/rust/Automerge-wasm[WebAssembly module] for ease of integration). That said, this document should let
+you get started building your own, or at least understanding how Automerge
+works.
+
+The storage format is designed for compactness and speed of parsing. Automerge 
+stores the full history of changes to the document: this is a large amount of
+data but in practice it is very repetitive and amenable to compression.
+
+In addition to parsing the storage format, an Automerge library must resolve
+conflicts between concurrent operations in a consistent way. This document does
+not yet discuss how to do that (pull requests welcome :D), but the reference
+implementation should serve as a guide.
 
 == Terminology and Conventions
 
@@ -26,225 +45,283 @@ shown here.
 
 == Concepts
 
-=== Actor IDs
+=== Document
 
-Actors represent sequential threads of operation in automerge. An actor ID is an
-arbitrary sequence of bytes.
+An Automerge document is a collaboratively editable JSON-like structure. The
+serialized form of a document contains complete history of changes and
+operations that collaborators have applied.
 
-=== Operations 
+Automerge documents have a root that is a map from string keys to arbitrary
+<<Value,values>>.
 
-Operations are individual mutations of a document which are bundled together in
-changes. Some operations carry a payload.
+=== Change
 
-=== Operation IDs
+A change is a group of <<Operation,operations>> that modify a <<Document,document>>,
+analagous to a "commit" in a version control system like git.
 
-Every operation is identified by the pair (`actor ID`, `counter`). The actor ID
-is the ID of the actor who created the operation, counter is an integer which
-always increases for each actor.
+Each change is made by an <<Actor,actor>>, and has a (possibly empty) set of 
+predecessor changes. Changes have an optional wall-clock timestamp, to keep
+track of when a change was committed, and an optional message to describe
+meaningful changes.
 
-[#objects-intro]
-=== Objects and object IDs
+A change is identified by its <<Change Hash,change hash>> which is the
+<<SHA256>> hash of the binary representation of the change.
 
-Some data types in an automerge document are composite objects, either maps from
-strings to values - the `map` and `table` objects - or sequences - `list` and
-`text`. Operations on these objects reference objects by the operation ID of the
-operation which creates the object. The null object ID indicates that the
-operation target is the "root" object, which is a map.
+=== Actor
 
-=== Dependency Graph
+An actor makes applies a linear sequence of <<Operations,operations>> to a <<Document,document>>
+and commits them in 1 or more <<Change,changes>>. Each actor has an actor ID that
+uniquely identifies it. An actor ID is an arbitrary sequence of bytes, which
+should be generated in a way that will not collide with other actors (the reference
+library generates 256-bit random identifiers).
 
-Changes in automerge form a DAG expressed by a list of `SHA256` hashes of direct
-ancestors stored in the `dependencies` field of the <<change-reference,
-change>>.
+There is a small amount of per-actor overhead, so if you have one process that
+edits a document several times, it is preferrable to re-use the same actor
+ID for each operation.
 
-[#lamport-timestamp]
-=== Lamport timestamp ordering
+=== Operation
 
-Operation IDs are lamport timestamps. This imposes a total ordering. To compare
-two lamport timestamps:
+An operation is an individual mutation made by an <<Actor,actor>> to a <<Document,document>>.
+For example, setting a key to a value or inserting a character into some text.
 
-* If the counter components are different then whichever timestamp has the
-  larger counter is the larger
-* If the counter components are the same but the actor IDs are different then
-  the actor ID which is lexicographically larger is considered the larger
-  timestamp
-* Otherwise the two timestamps are equal
+An operation has an <<Action,action>> which identifies what it does, and various fields
+depending on which action. For example an `"inc"` operation has to identify which
+counter to increment and by how much.
+
+Each operation is identified by an operation ID. An operation ID is a pair
+of (<<Actor,actor ID>>, counter), where the counter is a unique always-incrementing
+value per actor.
+
+=== Object
+
+An object represents a collaboratively editable value in an Automerge document. There are three kinds
+of object:
+
+* `map` which maps string keys to arbitrary values,
+* `list` which is an ordered list of arbitrary values
+* `text` which is a collaboratively editable string.
+
+Each object is created by an operation with an `action` of `"makeMap"`,
+`"makeList"` or `"makeText"`, and is identified by its object ID. The object ID
+is the <<Operation,operation ID>> of the operation that created the object.
+
+Each document has a root `map` which is identified by the object ID `NULL`.
+
+=== Value
+
+Automerge documents are dynamically typed, and can contain any of the following kinds of value:
+
+* `map`, `list`, `text` – the collaboratively editable <<Object,Objects>>
+* `null` - an typed null
+* `bool` - either `true` or `false`
+* `float` - a 64-bit IEEE754 float
+* `int` - a 64-bit signed int
+* `uint` – a 64-bit unsigned int
+* `string` - a utf-8 encoding string (possibly contianing U+0000)
+* `bytes` - an arbitrary sequence of bytes
+* `timestamp` - a 64-bit signed integer milliseconds since the https://en.wikipedia.org/wiki/Unix_time[unix epoch]
+* `counter` - a 64-bit signed intenger that collaborators increment or decrement (instead of overwrite)
+
+== File structure
+
+An Automerge file consists of one or more length delimited chunks.
+Implementations must attempt to read chunks until the end of the file.
+
+[#chunk-containers]
+=== Chunks
+
+[bytefield, target="chunk-container"]
+....
+(defattrs :vertical [:plain {:writing-mode "vertical-rl"}])
+(def row-height 120)
+(draw-column-headers)
+(draw-box "magic" {:span 4})
+(draw-box "checksum" {:span 4})
+(draw-box (text "block type" :vertical))
+(draw-box (text "chunk length" :vertical) {:borders #{:left :top :bottom}})
+(draw-gap-inline)
+(draw-gap "chunk contents")
+(draw-bottom)
+....
+
+|===
+| Field                   | Byte Length         | Description
+
+| Magic Bytes             | 4                   | The sequence `[0x85, 0x6f, 0x4a, 0x83]`
+| <<Checksum>>            | 4                   | Validates the integrity of the chunk
+| <<Chunk Type>>          | 1                   | The type of this chunk
+| Chunk length            | Variable (64-bit <<uLEB>>) | The length of the following chunk bytes
+| Chunk contents          | Variable        | The actual bytes for the chunk
+|===
+
+If the first four bytes are not exactly the magic bytes implementations MUST abort.
+
+==== Chunk Type
+A chunk type is either:
+
+|===
+| Value | Type | Description
+| `0x00` | <<Document Chunk>> | Contains a graph of related changes
+| `0x01` | <<Change Chunk>> | Contains a single change and its operations
+| `0x02` | <<Compressed Chunk>> | Either a Document Chunk or Change Chunk that has been DEFLATE compressed
+|===
+
+[#document-chunks]
+==== Document Chunk
+
+Documents are binary representations of any number of changes and operations
+made by any number of actors. The format is heavily inspired by columnular
+databases to optimize for efficient compression and fast parsing.
+
+Most fields are of arbitrary length, so parsing the document must proceed in
+order; in particular it is not possible to know the length of the column fields
+until the column metadata has been parsed.
+
+|===
+| Field                                       | Type            | Description                                       
+
+| Actors                                      | <<Array of Actor IDs>>        | The actor IDs in sorted order                     
+| Heads                                       | <<Array of Change Hashes>>            | The head hashes of the hash graph in sorted order 
+| Change columns metadata                     | <<Array of Column Metadata>>  |
+| Operation columns metadata                  | <<Array of Column Metadata>>  | 
+| Change columns                              | <<Column Data>>      | The actual bytes for the change columns
+| Operation columns                           | <<Column Data>>      | The actual bytes for the operation columns
+| Head indexes                                | <<Array of Head Indexes>>     | The indices of the heads in the changes
+|===
+
+WARNING: Should we allow for Extra bytes in documents?
+
+A single document contains many changes. Change metadata is encoded separately
+to operation data in a column oriented format using the change column metadata
+and change bytes above, whilst the operations are encoded using the operations
+column metadata and operations bytes. The process of decoding these consists of
+first reading all the operation data, then the change metadata using the
+procedures outlined in <<column-encodings, column encodings>>, then matching up
+operations with their change metadata to construct the reference document.
 
 
-=== Reference Data Model
+[#change-chunks]
+==== Change Chunk
 
-The reference data model is an abstract representation of an automerge
-document. Implementations will generally choose application specific
-representations of the data types but the encoding is defined in terms of
-mappings to and from the reference data model.
-
-Note that for forwards compatibility the reference data model may contain fields
-which we don't know the name or purpose of. This data may be produced by future
-versions of automerge and MUST be retained when mapping to and from the
-reference data model. See <<unknown-columns, unknown colums>> for details on how
-this is achieved in the columnar storage format.
-
-
-[#change-reference]
-==== Change
+The fields in a change chunk, in order, are:
 
 |===
 | Field | Type | Description
 
-| Actor ID | Arbitrary byte sequence | Unique actor ID
-| Seq | 64 bit Integer | Sequence number, always increasing per-actor
-| Message | Optional byte sequence | Human readable message describing this
-change
-| Dependencies | List of 32 byte arrays | List of hashes of parent changes
-| Operations | List of operations | The operations in this change
-| Extra bytes | Arbitrary byte sequence | Extra data reserved for forward
-compatibility reasons
-3+| ... other unknown fields ... |
+| Dependencies | <<Array of Change Hashes>> | The hashes of dependencies for this change
+| Actor length | 64-bit <<uLEB>> | The length of the actor ID
+| Actor | bytes | The <<Actor,actor ID>>
+| Sequence number | 64-bit <<uLEB>> | The sequence number
+| Start op | 64-bit <<uLEB>> | The counter of the first op in this change 
+| Time | 64-bit <<uLEB>> | The time this change was created in milliseconds since the unix epoch
+| Message length | 64-bit <<uLEB>> | The length of the message in bytes
+| Message | UTF-8 encoded string | The message associated with this change
+| Other actors | <<Array of Actor IDs>> | Other actor IDs in this change
+| Operation columns metadata | <<Array of Column Metadata>> | The metadata for the column oriented operation encoding 
+| Operation columns | <<Column Data>> | The actual bytes for the operation columns
+| Extra bytes | bytes | All data remaining in the chunk
 |===
 
-==== Operations
+For forward compatibility the extra data must be retained when writing the
+change back to storage.
 
-|===
-| Field | Type | Description
+[#compressed-chunks]
+==== Compressed Chunk
 
-| Object ID | Operation ID | The ID of the object this operation pertains to
-| Key | String or operation ID | The map property or sequence element within the
-object
-| Action | Action | The change this operation is making
-| Value | Optional <<primitive-values, primitive value>> | The payload of this operation (if any)
-| Pred | List of operation IDs | Previous operations this operation supercedes
-| Unknown field 1 | an <<unknown-field-values, unknown field>>| forward
-compatible data
-3+| ... other unknown fields ... |
-|===
+Compressed chunks must be decompressed using <<DEFLATE>>. The decompressed chunk
+should be either a <<Document Chunk>> or <<Change Chunk>>. Implementations
+SHOULD raise an error if the contents of a compressed chunk is another
+compressed chunk.
 
-The action of an operation can be one of a few different types:
+==== Checksum
 
-`makeMap`, `makeTable`, `makeList`, `makeText` :: Operations which denote
-creation of a new composite object. The ID of the operation becomes the ID of
-the resulting object as noted in <<objects-intro,objects>>.
-`del` :: Marks the key within the object as deleted
-`inc` :: Increments the counter stored at the given object and key
-`set` :: Set the value at the given object and key
+The checksum is the first four bytes of the <<SHA256>> hash of the concatenation of the chunk length
+and chunk contents fields. The checksum calculated from this hash is the first
+four bytes of the hash. Implementations MUST abort reading if the checksum does
+not match.
 
-The `inc` and `set` operations have an associated `value` field which is a
-<<primitive-values, primitive value>>. For all other operations `value` is `null`.
+==== Change Hash
 
-[#primitive-values]
-==== Primitive Values
-
-Primitive values can be any of the following
-
-|===
-| Type | Description
-
-| bytes | Arbitrary sequnce of bytes 
-| string | A valid UTF-8 string
-| int | 64 bit integer
-| float | 64 bit floating point number
-| counter | 64 bit positive integer
-| timestamp | 64 bit positive integer
-| boolean | boolean
-| null | the null value
-|===
-
-Technically the `counter` and `timestamp` types are not primitive but they are
-still treated separately in the data model.
-
-[#unknown-field-values]
-==== Unknown field values
-
-Unknown fields may contain either a <<primitive-values, primitive value>> or a
-list of lists of primitive values.
-
-== Columnar Storage Format
-
-=== Overview
-
-This section specifies a general storage format. This format is used to encode
-several different kinds of data within the different <<chunk-containers, chunk
-types>> of an automerge document. Notably, this storage format is designed to be
-forward compatible, see the section on <<unknown-columns, unknown columns>>.
+A change hash is the <<SHA256>> hash of the concatenation of the chunk length
+and chunk contents fields of a change represented as a <<Change Chunk>>.
 
 === Simple types
 
-==== uLEB and LEB
+==== uLEB
 
 uLEB is an unsigned https://en.wikipedia.org/wiki/LEB128[little endian base 128] value.
-This is a variable length encoding used throughout this document.
+This is a variable length encoding used throughout.
 
-LEB is the signed variant.
+To encode a uLEB, represent the number in binary and pad it with leading zeros
+so that it has a length which is a multiple of 7. Take each group of 7 bytes from
+least-significant to most-significant and output them in bytes - the first bit
+of every byte is 1 except for the last byte which is 0.
 
-[#action-array]
-==== Action array
+* Unsigned ints 0 - 127 are stored as one byte: `0b00000000 - 0b01111111`
+* Unsigned ints 128 - 16383 are stored as two bytes: `0b10000000 0b00000001 - 0b11111111 0b01111111`
+etc.
+
+To decode a uLEB, read bytes up to and including the first byte with a 0 as the
+first bit.  Take the latter 7 bits from each byte (the last byte contains the
+most significant bits, so you need to concatenate them in the opposite order to
+which the bytes are represented on disk).
+
+Although uLEB encoding can support numbers of arbitrary bitsize, fields in
+Automerge are size limited to 32, 53 or 64 bits. Implementations should fail to
+parse documents that contain overly large encoded integers in fields.
+
+Implementations must not generate overly long encodings, and should reject
+documents with overly long encodings. For example using the decoding rules above
+the bytes `0b10000000 0b00000000` would be decoded as 0; but this is overly
+long: 0 can be represented in just one byte as `0b00000000`.
+
+==== LEB
+
+LEB is a signed variant https://en.wikipedia.org/wiki/LEB128[little endian base 128] value
+
+To encode a uLEB, represent the number in twos complement, and sign-extend it so
+that it has a length which is a multiple of seven. If the number is negative the padding will
+be of 1-bits and if the number is positive the padding will be 0-bits.
+
+* 0 is represented as one byte: `0b0000000`
+* Ints from 1 to 63 are represented as one byte: `0b00000001 - 0b00111111`
+* Ints from -1 to -64 are represented as one byte: `0b01111111 - 0b010000000`
+* Ints from 64 to 8191 are represented as two bytes: `0b11000000 0b00000000 - `0b11111111 0b00111111`
+* Ints from -65 to -8192 are represented as two bytes: `0b10111111 0b01111111 - 0b10000000 0b01000000`
+etc.
+
+To decode an LEB, read bytes up to and including the first byte with a 0 as the
+first bit.  Take the latter 7 bits from each byte (the last byte contains the
+most signfiicant bits, so you need to concatenate them in the opposite order to
+which the bytes are represented on disk). If the first bit of your number is 1
+(from the second bit of the last byte in encoded form) then you have a negative
+number and you can take twos complement to get to its absolute value; otherwise
+you have a positive number (or 0).
+
+Implementations must not generate overly long encodings, and should reject
+documents with overly long encodings.  For example the decoding rules above the
+bytes `0b11111111 0b01111111` would be decoded as -1; but this is overly long: -1 can be represented as just one byte `0b01000000`.
+
+==== Action
 
 The actions of the reference data model are encoded in the storage format as a
-0-based index into the following array:
+byte as follows:
 
 |===
-| Action
+| Byte | Action      | Description
 
-| `makeMap`
-| `set`
-| `makeList`
-| `del`
-| `makeText`
-| `inc`
-| `makeTable`
-| `link`
+| 0x00 | `makeMap`   | Creates a new map object
+| 0x01 | `set`       | Sets a key of a map, overwrites an item in a list, inserts an item in a list, or edits text
+| 0x02 | `makeList`  | Creates a new list object
+| 0x03 | `del`       | Unsets a key of a map, or removes an item from a list (reducing its length)
+| 0x04 | `makeText`  | Creates a new text object
+| 0x05 | `inc`       | Increments a counter stored in a map or a list
 |===
 
-WARNING: Link is unusued I think?
+==== Column Specification
 
-
-[#column-metadata-block]
-=== Column Metadata
-
-Data stored in columnar format is made up of two parts, a metadata block and a
-data block. The metadata block is length delimited:
-
-|===
-| Field | Description
-
-| Num columns | uLEB of the number of columns in the metadata
-| Column metadata | The bytes containing the  metadata
-|===
-
-The column metadata consists of pairs of the form
-
-|===
-| Field | Description
-
-| <<column-specifications, Column Specification>> | a uLEB integer
-| Column data length | uLEB encoding of the length of the data for this column in the data
-block 
-|===
-
-The data for each column is in the data block in the same position as the
-respective column occurs in the metadata block. The column specification encodes
-how to interpret the data in the data block.
-
-==== Order of columns
-
-Columns MUST be encoded in ascending <<normalized-column-specification, normalized
-column specification>> order, implementations MUST abort parsing a document if
-the columns are not in this order.
-
-The column data is encoded in the data block in the same order as the column
-metadata.
-
-[#column-specifications]
-==== Column Specifications
-
-Column specifications are a uLEB encoded integer which should be interpreted
-as a bitfield like so:
-
-WARNING: This allows column IDs to be arbitrarily large which means
-implementations will need to choose how large they want to allow them to be
-(e.g. the javascript implementation choose 2^53 whilst the rust implementation
-uses 32 bit integers. This may be a problem because column IDs are not actually
-integers so there's no reason to think that they won't hit the ends of these
-ranges. We shold probably specify a size.
+Column specifications are a 32-bit integer <<uLEB>> encoded which should be
+interpreted as a bitfield like so:
 
 [bytefield,target="column-id-layout"]
 ....
@@ -262,57 +339,223 @@ ranges. We shold probably specify a size.
   `0` otherwise
 * The remaining bits are the column ID
 
-Implementations MUST abort if duplicate column specifications are detected when
-parsing.
-
 If the deflate bit is set then the column data must first be decompressed using
 DEFLATE before proceeding with decoding the values.
+
+The ID defines the purpose of the column for either <<Change Columns>> or
+<<Operation Columns>>, and implementations must preserve columns that they do
+not understand.
 
 The column type specifies how the data in the column is encoded. The possible
 types are:
 
 [#column-types-table]
 |===
-| Value | Description | Encoding
+| Value | Description
 
-| 0 | <<group-columns,Group>> | RLE compressed uLEB
-| 1 | <<actor-index-columns, Actor Index>> | RLE compressed integer
-| 2 | Integers | RLE compressed LEB
-| 3 | Positive integers | Delta compressed uLEB
-| 4 | Booleans | Boolean
-| 5 | Strings | RLE compressed utf-8
-| 6 | <<raw-value-columns, Raw value metadata>> | RLE compressed LEB
-| 7 | <<raw-value-columns, Raw values>> | Raw values
+| 0 | <<Group Column>>
+| 1 | <<Actor Column>>
+| 2 | <<uLEB Column>>
+| 3 | <<Delta Column>>
+| 4 | <<Boolean Column>>
+| 5 | <<String Column>>
+| 6 | <<Value Metadata Column>>
+| 7 | <<Value Column>>
 |===
 
-[#normalized-column-specification]
-===== Normalized column specification
+=== Compound types
 
-Because columns can be optionally compressed there are two possible encodings of
-the same column specification - one with and one without the compression bit set.
-Column specifications are normalized by setting their 4th least significant bit
-to 0.
+==== Array of Actor IDs
 
-[#column-encodings]
-=== Column Encodings
+The actor ID array consists of a 64-bit <<uLEB>> giving the count of actor ids, followed by 
+each actor ID as a length-prefixed byte array.
 
-All columns MUST have the same number of values. Note that for grouped columns
-this refers to the number of values in the group column and for value columns
-this refers to the number of values in the value metadata column. The only
-exception to this rule is if every single value in the column is `null` (for
-column types which admit a null value), in which case the column length may be
-`0` and implementations must fill in null values for each row.
+For example an array consisting of the single actor ID `[0xab, 0xcd, 0xef]`
+would be encoded as: `0x01 0x03 0xab 0xcd 0xef`.
+
+Implementations must store actor ids lexicographically, and should error when
+reading a document with actor ids in the wrong order.
+
+==== Array of Change Hashes
+
+The heads array consists of a 64-bit <<uLEB>> giving the count of heads, followed by each 32-byte head.
+
+For example an array consisting of the heads `f986a4318d1f1cc0e2e10e421e7a9a4cd0b70a89dae98bc1d76d789c2bf7904c` and `4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865` would be represented as `0x02 0xf9 0x86 ..{28 bytes elided).. 0x90 0x4c 0x43 0x55 ..{28 bytes elided}.. 0xd8 0x65`
+
+==== Array of Head Indexes
+
+The head indexes array consists of one 64-bit <<uLEB>> per head which identifies
+the change that the head references. They are stored in the same order
+as the heads in the <<Array of Change Hashes>> at the start of the <<Document Chunk>>
+
+For example if your document contains two heads and two changes, the array might
+consist of a 0 and a 1, encoded  as `0x00 0x01`
+
+WARNING: What is the point of this field?
+
+==== Array of Column Metadata
+
+The column metadata array consists of a 64-bit <<uLEB>> N giving the number of columns, followed by N pairs describing each columns
+
+|===
+| Field | Description
+
+| Column Specification | a <<uLEB>> encoded <<Column Specification>>
+| Column Length | 64-bit <<uLEB>> of the length (in bytes) of the column data
+block 
+|===
+
+The specifications must be unique and sorted. Because columns may optionally be compressed,
+the sort order is defined by setting the deflate bit to 0. Implementations must not include
+both an uncompressed and a compressed column with the same ID and type.
+
+A column may have length 0 if every value in the column is null.
+
+=== Column Data
+
+Columns are stored one after the other with no separators or length indicators.
+The column are stored in order they appear in the <<Array of Column Metadata>>
+and they can be decoded according to the <<Column Specification>>.
+
+All columns must have the same number of items, though as they are compressed
+differently they may have vastly different byte counts.
+
+For future compatibility it is important that programs which edit Automerge
+documents maintain all columns, even those that they don't understand the
+meaning of. When new data is added a null should be added to any unknown column
+following the encoding rules of its <<Column Specification>>.
+
+==== Change Columns
+
+The currently defined columns for changes in a <<Document Chunk>> are:
+
+|===
+| Name | Specification | Type | Description
+
+| Change actor | 1 | <<Actor Column>>  |
+| Sequence number | 3 | <<Delta Column>> | The sequence number for each change
+| maxOp | 19 | <<Delta Column>> | The largest counter that occurs in each change
+| time | 35 | <<Delta Column>> | The time at which each change was made
+| message | 53 | <<String Column>> | The commit messages for each change
+| dependencies group | 64 | <<Group Column>> |
+| dependencies index | 67 | <<Delta Column>> |
+| value metadata | 86 | <<Value Metadata Column>> | The metadata for any extra data for this change
+| value | 87 | <<Value Column>> | The data for any extra data for this change
+|===
+
+Each row in the column oriented change metadata therfore can be written as:
+
+|===
+| Field | Type | Mapping
+
+| Actor | positive integer | lookup_actor(change actor)
+| Seq | positive integer | sequence number
+| maxOp | positive integer | maxOp
+| time | positive integer | time
+| message | utf-8 | message
+| deps | list of integers | read dependencies group and dependencies
+index columns
+| extra | primitive value | read the value metadata and value raw columns
+|===
+
+The `deps` field refers to the index of the changes this change depends on in
+the change metadata rows. Implementations MUST abort if `deps` references an
+index which is out of bounds.
+
+For a given actor the `seq` field of changes must strictly increase by `1`.
+Implementations MUST abort if there are missing changes for a given actor ID.
+
+The `maxOp` field of the change refers to the largest counter component of an
+operation ID in the set of operations in this change. For a given actor ID this
+must always increase. Implementations MUST abort if the `maxOp` of a change is
+not larger than all the `maxOp` of changes from that actor with smaller `seq`.
+
+
+==== Operation Columns
+
+The currently defined columns for operations in a <<Document Chunk>> or a <<Change Chunk>> are:
+
+|===
+| Field | Specification | Type | Description
+ 
+| Object actor | 1 | <<Actor Column>> | actor index of object ID each operation targets
+| Object counter | 2 | <<uLEB Column>> | counter of the object ID each operation targets
+| Key actor | 17 | <<Actor Column>> | actor of the operation ID of the key of each operation
+| Key counter | 19 | <<Delta Column>> | counter of the operation ID of the key of each
+  operation
+| Key string | 21 | <<String Column>> | The string key each operation targets
+| actor | 33 | <<Actor Column>> | The actor of each operations ID
+| counter | 35 | <<Delta Column>> | The counter of each operations ID
+| insert | 52 | <<Boolean Column>> | Whether or not this is an insert operation
+| action | 66 | <<uLEB Column>> | The <<Action>> of each operation
+| value metadata | 86 | <<Value Metadata Column>> | The metadata for the value of this operation
+| value | 87 | <<Value Column>> | The value of this operation
+| successor group | 128 | <<Group Column>> | The group for the successors of this operation
+| successor actor | 129 | <<Actor Column>> | The actor of each successor operation ID of this operation
+| successor counter | 131 | <<Delta Column>> | The counter of each successor operation ID of this operation
+|===
+
+WARNING: The javascript implementation includes a `child` column, is this
+required?
+
+We determine the key that the operation refers to thusly:
+
+* If the key string is not null then this is the key of the operation
+* Otherwise we use the pair (lookup_actor(key actor), key counter) as the key of the operation
+* If key string is null and any of key actor or key counter are null
+  implementations MUST abort
+
+Using this procedure we can write the operations as:
+
+|===
+| Field | Type | Mapping to columns
+
+| Object | Operation ID | (lookup_actor(object actor), object counter)
+| Key | either string or operation ID | The value determined above
+| Id | Operation ID | (lookup_actor(actor), counter)
+| Insert | boolean | insert
+| <<Action>> | action | action
+| Value | primitive value | value metadata and value columns
+| Successors | list of operation ID | (lookup_actor(actor), counter) for actor,
+and counter in the success group column
+|===
+
+=== Column Types
+
+
+==== Run Length Encoding
+
+Many columns use run length encoding to compress repeated values. Such columns are
+encoded as repeated pairs of the form `(length, value)`.
+
+A "run" in an RLE columns is encoded as pairs of the form `(length,value)`.
+`length` is a signed <<LEB>> encoding of the length of the run. the interpretation
+of `value` depends on `length`.
+
+* If `length` is positive, then `value` is a single instance of the value which
+  occurs `length` times.
+* If `length` is 0 then this pair represents a `null` value and `value` is the
+  uLEB encoding of the number of times `null` occurs
+* If `length` is negative then `value` is a literal run and the absolute value
+  of `length` is the number of items in the literal run. That is to say, there
+  is no compression.
+
+For example if you were trying to compress the array of uLEBs `[0,0,0,null,null,1,2,3]`
+you might encode that as `0x03 0x00 0x00 0x02 0x7d 0x01 0x02 0x03`
 
 [#actor-index-columns]
-==== Actor Index
+==== Actor Column
 
-Columns which contain actor IDs. Actor IDs are repeated frequently so the column
-value is an index into an array of actors encoded elsewhere. The exact nature of
-the mapping from the index to an actor ID depends on the <<chunk-containers,
-chunk type>>.
+An actor column uses <<Run Length Encoding>> to compress a list of <<uLEB>>s
+that represent an index into an array of actor ids.
+
+In a <<Document Chunk>> the index is the position of the actor id in the <<Array of Actor IDs>>.
+
+In a <<Change Chunk>> index 0 represents the actor id of the change, and index 1+ are given to the
+other actor ids in the order they appear.
 
 [#group-columns]
-==== Group
+==== Group Column
 
 A group column specifies a composite, collection-valued column. Column
 specifications following the group column specification in the metadata block
@@ -361,63 +604,27 @@ column specification without a following column specification of the same ID is
 encountered.
 
 
-[#rle-columns]
-==== RLE
+==== uLEB Column
 
-Run length encoding of values. The type of values in a column will be one of
-the following: 
+A uLEB column uses <<Run Length Encoding>> to compress a list of 64-bit numbers
+encoded as <<uLEB>>s.
 
-* uLEB encoded integers
-* LEB encoded integers
-* Length prefixed UTF-8 strings which consist of a uLEB encoded integer
-  followed by that number of UTF-8 bytes
+==== Delta Column
 
-For a given RLE column the type is specified by the column type in
-<<column-types-table, column types>>. 
+A delta column uses <<Run Length Encoding>> to compress a list of 64-bit numbers
+encoded as signed <<LEB>>s.
 
-A "run" in an RLE columns is encoded as pairs of the form `(length,value)`.
-`length` is a signed LEB encoding of the length of the run. the interpretation
-of `value` depends on `length`.
+The first number in the list is the starting value of the column, and subsequent
+numbers represent the difference between the next value and the current value.
 
-* If `length` is positive, then `value` is a single instance of the value which
-  occurs `length` times.
-* If `length` is 0 then this pair represents a `null` value and `value` is the
-  uLEB encoding of the number of times `null` occurs
-* If `length` is negative then `value` is a literal run and the absolute value
-  of `length` is the number of items in the literal run. That is to say, there
-  is no compression.
+For example, if you wanted to encode the list [3,4,5,6,9,7,8] you would first
+delta encode to get [3,1,1,1,3,-2,1], and then run-length encode to
+`0x7f 0x03 0x03 0x01 0x7d 0x03 0x7e 0x01`.
 
-==== Delta
+WARNING: How should applications handle a decoded delta value which takes the
+absolute value below zero?
 
-This encoding is only applicable for columns which contain positive integer
-datatypes. The encoded data is a sequence of uLEB integers. The value starts as
-`0` and each new item is encoded as the difference between the new value and the
-current value. This sequence of deltas is then run length encoded as per the run
-length encoding section.
-
-For example, the sequence 
-
-....
-[1,2,3,4,5,10,15]
-....
-
-Would be encoded as 
-
-....
-[1,1,1,1,1,5,5]
-....
-
-This sequence is then run length encoded to given
-
-....
-[(5,1), (2,5)]
-....
-
-WARNING: What should the null value be for a delta column? How should
-applications handle a decoded delta value which takes the absolute value below
-zero?
-
-==== Boolean
+==== Boolean Column
 
 This encoding is only available for columns containing booleans. The column
 contains sequences of uLEB integers which represent alternating sequences of
@@ -428,7 +635,14 @@ false]`.
 
 
 [#raw-value-columns]
-==== Raw values
+==== Value Metadata Column
+
+The Value metadata column is always paired with a <<Value column>> with the same
+ID. The metadata column is a <<Run Length Encoding>> compressed list of 64-bit
+<<LEB>>s
+
+
+==== Value Column
 
 Raw value fields are encoded as two column specifications. The first has type
 `6`, indicating that it is raw value metadata and the second has type `7`,
@@ -449,10 +663,9 @@ compressed LEB integers. These integers are laid out like so
 [bytefield,target="raw-value-metadata-layout"]
 ....
 (defattrs :vertical [:plain {:writing-mode "vertical-rl"}])
-(draw-column-headers {:labels (reverse column-labels)})
-(draw-box "length" {:span 13 :borders #{:left :top :bottom}})
-(draw-gap-inline)
-(draw-box "type" {:span 2})
+(draw-column-headers {:labels ["64", "63", "62", "61" ,"60", "59","58","57","56","...","6","5","4","3","2","1"] } )
+(draw-box "length" {:span 12})
+(draw-box "type" {:span 4})
 ....
 
 * The lower four bits encode the type of the value
@@ -476,7 +689,7 @@ The type code may be
 |===
 
 If the type tag is none of these values it may be a value produced by a future
-version of automerge. In this case implementations MUST read and store the type
+version of Automerge. In this case implementations MUST read and store the type
 code and raw bytes when reading and write them back in same position when
 writing.
 
@@ -513,121 +726,7 @@ When inserting new rows into a collection of rows stored in the columnar storage
 format application MUST write a null value into columns which they do not
 recognise for the new rows they are inserting.
 
-WARNING: What should the null value be for boolean columns?
-
-== File structure
-
-An automerge file consists of one or more length delimited chunks.
-Implementations must attempt to read chunks until the end of the file. There are
-three types of chunk, one which contains an entire compressed dependency graph of
-changes - often called the "document" format; one which contains a single
-change, and one which contains deflate compressed data which is itself a
-chunk.
-
-[#chunk-containers]
-=== Chunk Container
-
-[bytefield, target="chunk-container"]
-....
-(defattrs :vertical [:plain {:writing-mode "vertical-rl"}])
-(def row-height 120)
-(draw-column-headers)
-(draw-box "magic" {:span 4})
-(draw-box "checksum" {:span 4})
-(draw-box (text "block type" :vertical))
-(draw-box (text "chunk length" :vertical) {:borders #{:left :top :bottom}})
-(draw-gap-inline)
-(draw-gap "chunk contents")
-(draw-bottom)
-....
-
-|===
-| Field                   | Byte Length     | Description
-
-| Magic Bytes             | 4               | Some magic bytes, specifically the
-sequence `[0x85, 0x6f, 0x4a, 0x83]`
-| Checksum                | 4               | First 4 bytes of the SHA256 of the encoded chunk
-| Block Type              | 1               | The type of this chunk
-| Chunk length            | Variable (uLEB) | The length of the following chunk bytes
-| Chunk | Variable        | The actual bytes for the chunk
-|===
-
-If the first four bytes are not exactly the magic bytes implementations MUST abort.
-
-[#hash-calculation]
-==== Hash and checksum calculation
-
-The hash is the <<SHA256>> hash of the concatenation of the chunk length
-and chunk contents fields. The checksum calculated from this hash is the first
-four bytes of the hash. Implementations MUST abort reading if the checksum does
-not match.
-
-
-=== Chunk types
-A chunk type is either:
-
-|===
-| Value | Description
-
-| `0` | A <<document-chunks, document chunk>>, containing an entire change graph
-| `1` | A <<change-chunks, change chunk>>, containing some change metadata and some operations
-| `2` | A deflate <<compressed-chunks, compressed chunk>>
-|===
-
-[#document-chunks]
-=== Document Chunks
-
-Document are stored in the following manner:
-
-[bytefield, target="document-chunk-header"]
-....
-(defattrs :vertical [:plain {:writing-mode "vertical-rl"}])
-(def box-width 110)
-(def boxes-per-row 8)
-(draw-box (text "actors length" ) {:borders #{:left :top :bottom}})
-(draw-gap-inline)
-(draw-box (text "actors" ) {:borders #{:left :top :bottom}})
-(draw-gap-inline)
-(draw-box (text "heads length" ) {:borders #{:left :top :bottom}})
-(draw-gap-inline)
-(draw-box (text "heads" ) {:borders #{:left :top :bottom}})
-(draw-gap-inline)
-(draw-gap "changes metadata")
-(draw-gap "operations metadata")
-(draw-gap "change bytes")
-(draw-gap "operations bytes")
-(draw-gap "head indexes")
-(draw-bottom)
-....
-
-
-|===
-| Field                                       | Type            | Description                                       
-
-| Actors length                               | uLEB | The number of following actors                    
-| Actors                                      | Array of actor IDs        | The actor IDs in sorted order                     
-| Heads length                                | uLEB | The number of following heads hashes              
-| Heads                                       | 32 * heads length long byte
-array    | The head hashes of the hash graph in sorted order 
-| Changes column metadata                     | <<column-metadata-block, column
-metadata>>        | The change columns metadata                    
-| Operations column metadata                  | <<column-metadata-block, column
-metadata>>| The operations columns metadata
-| Change bytes                                | Column data        | The actual bytes for the changes                  
-| Operations bytes                            | Column data        | The actual bytes for the operations               
-| <<head-indexes,Head indexes>>               | Array of uLEB | The indices of the heads in the changes
-|===
-
-Actor IDs are <<length-prefixed-actor-ids,length prefixed>>. Implementations
-MUST abort if the actors array is not lexicographically ordered.
-
-A single document contains many changes. Change metadata is encoded separately
-to operation data in a column oriented format using the change column metadata
-and change bytes above, whilst the operations are encoded using the operations
-column metadata and operations bytes. The process of decoding these consists of
-first reading all the operation data, then the change metadata using the
-procedures outlined in <<column-encodings, column encodings>>, then matching up
-operations with their change metadata to construct the reference document.
+WARNING: What should the null value be for boolean or delta columns?
 
 [#document-actor-lookup]
 ==== Actor lookup
@@ -637,60 +736,6 @@ array at the start of the document. Actor indexes throughout the document refer
 to the index into this array. We use the syntax `lookup_actor(actor_index)` to
 refer to this procedure.
 
-
-[#document-operations]
-==== Operations
-
-The columns in the operation storage are at least the following:
-
-|===
-| Field | Specification | Type | Description
- 
-| Object actor | 1 | Actor index | actor index of object ID this operation targets
-| Object counter | 2 | RLE compressed uLEB | counter of the object ID this operation targets
-| Key actor | 17 | Actor index | actor of the operation ID of the key of this operation
-| Key counter | 19 | Delta compressed uLEB | counter of the operation ID of the key of this
-  operation
-| Key string | 21 | RLE compressed utf-8 | The string key this operation targets
-| actor | 33 | Actor index | The actor of this operations ID
-| counter | 35 | Delta compressed uLEB | The counter of this operations ID
-| insert | 52 | Boolean | Whether or not this is an insert operation
-| action | 66 | RLE compressed uLEB | The action index of this operation
-| value metadata | 86 | Value metadata | The metadata for the value of this operation
-| value | 87 | Value contents | The value of this operation
-| successor group | 128 | Group | The group for the successors of this operation
-| successor actor | 129 | Actor index | The actor of each successor operation ID of this operation
-| successor counter | 131 | Delta compressed uLEB | The counter of each successor operation ID of
-this operation
-|===
-
-WARNING: The javascript implementation includes a `child` column, is this
-required?
-
-Any unknown columns MUST be preserved when decoding and written back out when
-encoding as per <<unknown-columns, unknown columns>>.
-
-We determine the key that the operation refers to thusly:
-
-* If the key string is not null then this is the key of the operation
-* Otherwise we use the pair (lookup_actor(key actor), key counter) as the key of the operation
-* If key string is null and any of key actor or key counter are null
-  implementations MUST abort
-
-Using this procedure we can write the operations as:
-
-|===
-| Field | Type | Mapping to columns
-
-| Object | Operation ID | (lookup_actor(object actor), object counter)
-| Key | either string or operation ID | The value determined above
-| Id | Operation ID | (lookup_actor(actor), counter)
-| Insert | boolean | insert
-| Action | action | <<action-array, action index lookup>>
-| Value | primitive value | value metadata and value columns
-| Successors | list of operation ID | (lookup_actor(actor), counter) for actor,
-and counter in the success group column
-|===
 
 ==== Order of operations
 
@@ -835,56 +880,14 @@ For each change sort the operations within the change by
 The dependencies in the document model are expressed as integer offsets. But in
 the reference data model dependencies are expressed as a hash of the ancestor
 changes. To map to the hash based representation perform a topological traversal
-of the dependency graph and for each change encode the change as per
-<<change-chunks>> and then calculate the hash of the change as in
-<<hash-calculation>>, then for every change replace the index of the current
-change with the calculated hash.
+of the dependency graph and for each change serialize the change as a <<Change
+Chunk>> then calculate the hash of the change as in the <<Change Hash>>, then
+for every change replace the index of the current change with the calculated
+hash.
 
 Once this procedure is complete take the heads of the depedency graph and
 compare their hashes with the head hashes field in the document chunk. If the
 hashes don't match implementations MUST abort.
-
-[#head-indexes]
-==== Head Indexes
-
-The head indexes is an array of uLEBs. There is one index for each head, the
-indexes are in the same order as the head hashes. Each index refers to the
-change in the change metadata to which the head hash is a reference.
-
-[#change-chunks]
-=== Change chunks
-
-The fields in a change chunk, in order, are:
-
-|===
-| Field | Type | Description
-
-| Dependency count | uLEB | The number of hashes in the dependencies fields
-| Dependencies | 32 * dependency count long byte array | The dependency hashes
-| Actor length | uLEB | The length of the actor ID
-| Actor | byte array | The actor ID
-| Sequence number | uLEB | The sequence number
-| Start op | uLEB | The counter of the first op in this change 
-| Time | uLEB | The time this change was created in milliseconds since the unix
-epoch
-| Message length | uLEB | The length of the message
-| Message | UTF-8 | The message associated with this change
-| Other actors length | uLEB | The number of other actor IDs in this change
-| Other actors | byte array | The other actor IDs
-| ops column metadata | <<column-metadata-block, Ops column metadata>> | The
-metadata for the column oriented operation encoding 
-| Ops column data | ops column data | The column data for the operations
-| Extra bytes | Byte array | Any data remaining in the chunk
-|===
-
-Each actor ID in the other actors array is a <<length-prefixed-actor-ids, length
-prefixed actor ID>>. 
-
-The actor IDs in the other actors array are lexicographically ordered.
-Implementations MUST abort when parsing a change which does not present the
-actors in this order.
-
-Note the extra data must be retained when writing the change back to storage.
 
 [#change-operation-columns]
 ==== Change operation columns
@@ -982,14 +985,6 @@ The reference change then becomes:
 | Operations | The operations mapped above
 | Extra bytes | The extra bytes in the change
 |===
-
-[#compressed-chunks]
-=== Compressed chunks
-
-Compressed chunks must be decompressed using <<DEFLATE>>. The decompressed chunk
-is a chunk container which should be interpreted as per <<chunk-containers,
-chunk containers>>. Implementations SHOULD raise an error if the contents of a
-compressed chunk is another compressed chunk.
 
 [#length-prefixed-actor-ids]
 === Length prefixed actor IDs
