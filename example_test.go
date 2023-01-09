@@ -26,40 +26,6 @@ func ExampleAs() {
 	fmt.Println(s.IsValid == true)
 }
 
-func ExampleList_Iter() {
-	doc := automerge.New()
-	list := doc.Path("list").List()
-
-	iter := list.Iter()
-	for {
-		i, v, valid := iter.Next()
-		if !valid {
-			break
-		}
-		fmt.Println(i, v)
-	}
-	if iter.Error() != nil {
-		panic(iter.Error())
-	}
-}
-
-func ExampleMap_Iter() {
-	doc := automerge.New()
-	m := doc.Path("map").Map()
-
-	iter := m.Iter()
-	for {
-		k, v, valid := iter.Next()
-		if !valid {
-			break
-		}
-		fmt.Println(k, v)
-	}
-	if iter.Error() != nil {
-		panic(iter.Error())
-	}
-}
-
 func ExampleSyncState() {
 	doc := automerge.New()
 	syncState := automerge.NewSyncState(doc)
@@ -72,10 +38,7 @@ loop:
 	// generate an initial message, and then do so again
 	// after receiving updates from the peer or making local changes
 	for {
-		msg, valid, err := syncState.GenerateMessage()
-		if err != nil {
-			panic(err)
-		}
+		msg, valid := syncState.GenerateMessage()
 		if valid {
 			send <- msg
 		}

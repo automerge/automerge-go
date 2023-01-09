@@ -85,15 +85,11 @@ var (
 	KindText Kind = 1024
 )
 
-// ActorID identifies the "actor" who is modifying a document.
-// Each operation applied to the document is identified by its
-// actorId and a counter, so it is important that each actor
-// generates a linear history of edits.
-type ActorID struct {
+type actorID struct {
 	v *C.AMactorId
 }
 
-func (a *ActorID) init(r *C.AMresult) error {
+func (a *actorID) init(r *C.AMresult) error {
 	if tag := C.AMresultValueTag(r); tag != C.AM_VALUE_ACTOR_ID {
 		return fmt.Errorf("expected VALUE_ACTOR_ID, got %v", tag)
 	}
@@ -102,52 +98,30 @@ func (a *ActorID) init(r *C.AMresult) error {
 	return nil
 }
 
-// NewActorID creates a new random actor id
-func NewActorID() *ActorID {
-	a, err := call[*ActorID](C.AMactorIdInit())
-	// this call cannot error
-	if err != nil {
-		panic(err)
-	}
-	return a
+// NewActorID generates a new unique actor id.
+func NewActorID() string {
+	ai := mustCall[*actorID](C.AMactorIdInit())
+	return ai.String()
 }
 
-// ActorIDFromString creates an actor id from a string.
-// The string must be an even number of hex characters.
-func ActorIDFromString(id string) (*ActorID, error) {
+func newActorID(id string) (*actorID, error) {
 	cID, free := toByteSpanStr(id)
 	defer free()
-	return call[*ActorID](C.AMactorIdInitStr(cID))
+	return call[*actorID](C.AMactorIdInitStr(cID))
 }
 
-// ActorIDFromBytes creates an actor id from those bytes
-func ActorIDFromBytes(id []byte) (*ActorID, error) {
-	cBytes, free := toByteSpan(id)
-	defer free()
-	return call[*ActorID](C.AMactorIdInitBytes(cBytes.src, cBytes.count))
-}
-
-// Bytes returns the underlying bytes of the actor id
-func (a *ActorID) Bytes() []byte {
-	defer runtime.KeepAlive(a)
-	return fromByteSpan(C.AMactorIdBytes(a.v))
-}
-
-// String returns the hex-encoded form of the actor id bytes
-func (a *ActorID) String() string {
+func (a *actorID) String() string {
 	defer runtime.KeepAlive(a)
 	return fromByteSpanStr(C.AMactorIdStr(a.v))
 }
 
-// Cmp returns 0 if the two actor ids are identical,
-// -1 if a < b and 1 if b > a
-func (a *ActorID) Cmp(b *ActorID) int {
-	defer runtime.KeepAlive(a)
-	defer runtime.KeepAlive(b)
-	return int(C.AMactorIdCmp(a.v, b.v))
-}
-
-// Doc represents an automerge document
+// Doc represents an automerge document. You can read and write the
+// values of the document with [Doc.Root], [Doc.RootMap] or [Doc.Path],
+// and other methods are provided to enable collaboration and accessing
+// historical data.
+// After writing to the document you should immediately call [Doc.Commit] to
+// explicitly create a [Change], though if you forget to do this most methods
+// on a document will create an anonymous change on your behalf.
 type Doc struct {
 	cDoc *C.AMdoc
 
@@ -174,14 +148,9 @@ func (d *Doc) init(r *C.AMresult) error {
 	return nil
 }
 
-// New creates a new empty document with a randomly generated actorId.
+// New creates a new empty document
 func New() *Doc {
-	d, err := call[*Doc](C.AMcreate(nil))
-	// This call cannot error
-	if err != nil {
-		panic(err)
-	}
-	return d
+	return mustCall[*Doc](C.AMcreate(nil))
 }
 
 // Load loads a document from its serialized form
@@ -193,15 +162,12 @@ func Load(b []byte) (*Doc, error) {
 }
 
 // Save exports a document to its serialized form
-func (d *Doc) Save() ([]byte, error) {
+func (d *Doc) Save() []byte {
 	cDoc, unlock := d.lock()
 	defer unlock()
 
-	b, err := call[*byteSpan](C.AMsave(cDoc))
-	if err != nil {
-		return nil, err
-	}
-	return b.bytes(), nil
+	bs := mustCall[*byteSpan](C.AMsave(cDoc))
+	return bs.bytes()
 }
 
 // RootMap returns the root of the document as a Map
@@ -209,79 +175,166 @@ func (d *Doc) RootMap() *Map {
 	return &Map{doc: d, objID: &objID{v: (*C.AMobjId)(C.AM_ROOT)}}
 }
 
-// Root returns the root of the document as
-// a Value with Kind() == KindMap
+// Root returns the root of the document as a Value
+// of [KindMap]
 func (d *Doc) Root() *Value {
 	return &Value{kind: KindMap, val: d.RootMap()}
 }
 
 // Path returns a [*Path] that points to a position in the doc.
-// path will panic unless each path component is a string or an int.
-// Passing no arguments to Path() returns a path pointing to the root of the
-// document.
+// Path will panic unless each path component is a string or an int.
+// Calling Path with no arguments returns a path to the [Doc.Root].
 func (d *Doc) Path(path ...any) *Path {
 	return (&Path{d: d}).Path(path...)
 }
 
-// Commit adds a new version to the document with all
-// local changes so far.
-// The returned ChangeHashes contains a single hash representing the
-// current state of the document.
-func (d *Doc) Commit(msg string) (*ChangeHashes, error) {
-	cMsg, free := toByteSpanStr(msg)
-	defer free()
-
-	cDoc, unlock := d.lock()
-	defer unlock()
-
-	return call[*ChangeHashes](C.AMcommit(cDoc, cMsg, nil))
+// CommitOptions are (rarer) options passed to commit.
+// If Time is not set then time.Now() is used. To omit a timestamp pass a pointer to the zero time: &time.Time{}
+// If AllowEmpty is not set then commits with no operations will error.
+type CommitOptions struct {
+	Time       *time.Time
+	AllowEmpty bool
 }
 
-// Heads returns the current heads for the document
-func (d *Doc) Heads() (*ChangeHashes, error) {
+// Commit adds a new version to the document with all operations so far.
+// The returned ChangeHash is the new head of the document.
+// Note: You should call commit immediately after modifying the document
+// as most methods that inspect or modify the documents' history
+// will automatically commit any outstanding changes.
+func (d *Doc) Commit(msg string, opts ...CommitOptions) (ChangeHash, error) {
 	cDoc, unlock := d.lock()
 	defer unlock()
 
-	return call[*ChangeHashes](C.AMgetHeads(cDoc))
-}
-
-// Changes returns the Changes made to the doc since *ChangeHashes.
-// If since is nil, returns all changes to recreate the document.
-func (d *Doc) Changes(since *ChangeHashes) (*Changes, error) {
-	cDoc, unlock := d.lock()
-	defer unlock()
-
-	if since == nil {
-		return call[*Changes](C.AMgetChanges(cDoc, nil))
+	allowEmpty := false
+	time := time.Now()
+	for _, o := range opts {
+		if o.AllowEmpty {
+			allowEmpty = true
+		}
+		if o.Time != nil {
+			time = *o.Time
+		}
 	}
 
-	defer runtime.KeepAlive(since)
-	return call[*Changes](C.AMgetChanges(cDoc, &since.v))
+	millis := (*C.int64_t)(C.NULL)
+	if !time.IsZero() {
+		m := time.UnixMilli()
+		millis = (*C.int64_t)(&m)
+	}
+
+	cMsg := C.AMbyteSpan{src: (*C.uchar)(C.NULL), count: 0}
+	if msg != "" {
+		var free func()
+		cMsg, free = toByteSpanStr(msg)
+		defer free()
+	}
+
+	ret, err := call[*changeHashes](C.AMcommit(cDoc, cMsg, millis))
+	if err == nil && len(ret.Get()) == 0 {
+		if !allowEmpty {
+			return nil, fmt.Errorf("Commit is empty")
+		}
+		ret, err = call[*changeHashes](C.AMemptyChange(cDoc, cMsg, millis))
+	}
+	if err != nil {
+		return nil, err
+	}
+	return ret.Get()[0], nil
 }
 
-// Apply the given changes to the document
-func (d *Doc) Apply(ch *Changes) error {
-	defer runtime.KeepAlive(ch)
+// Heads returns the hashes of the current heads for the document.
+// For a new document with no changes, this will have length zero.
+// If you have just created a commit, this will have length one. If
+// you have applied independent changes from multiple actors, then the
+// length will be greater that one.
+// If you'd like to merge independent changes together call [Doc.Commit]
+// passing a [CommitOptions] with AllowEmpty set to true.
+func (d *Doc) Heads() []ChangeHash {
 	cDoc, unlock := d.lock()
 	defer unlock()
 
-	_, err := call[*void](C.AMapplyChanges(cDoc, &ch.v))
+	ret := mustCall[*changeHashes](C.AMgetHeads(cDoc))
+	return ret.Get()
+}
+
+// Change gets a specific change by hash.
+func (d *Doc) Change(ch ChangeHash) (*Change, error) {
+	cDoc, unlock := d.lock()
+	defer unlock()
+
+	byteSpan, free := toByteSpan([]byte(ch))
+	defer free()
+
+	ret, err := call[*changeSet](C.AMgetChangeByHash(cDoc, byteSpan.src, byteSpan.count))
+	if err != nil {
+		return nil, err
+	}
+
+	changes := ret.Changes()
+	if len(changes) == 0 {
+		return nil, fmt.Errorf("hash %s does not correspond to a change in this document", ch)
+	}
+
+	return changes[0], nil
+}
+
+// Changes returns all changes made to the doc since the given heads.
+// If since is empty, returns all changes to recreate the document.
+func (d *Doc) Changes(since ...ChangeHash) ([]*Change, error) {
+	cDoc, unlock := d.lock()
+	defer unlock()
+
+	var sv *C.AMchangeHashes
+
+	if len(since) > 0 {
+		chs, err := newChangeHashes(since)
+		if err != nil {
+			return nil, err
+		}
+		defer runtime.KeepAlive(chs)
+		sv = &chs.v
+	}
+
+	cs, err := call[*changeSet](C.AMgetChanges(cDoc, sv))
+	if err != nil {
+		return nil, err
+	}
+	return cs.Changes(), nil
+}
+
+// Apply the given change(s) to the document
+func (d *Doc) Apply(chs ...*Change) error {
+	if len(chs) == 0 {
+		return nil
+	}
+
+	cDoc, unlock := d.lock()
+	defer unlock()
+
+	arg := make([]C.AMbyteSpan, len(chs))
+	for i, ch := range chs {
+		defer runtime.KeepAlive(ch)
+		arg[i] = C.AMchangeRawBytes(ch.v)
+	}
+
+	cs, err := call[*changeSet](C.AMchangesInit(&arg[0], C.size_t(len(arg))))
+	if err != nil {
+		return err
+	}
+
+	_, err = call[*void](C.AMapplyChanges(cDoc, &cs.v))
 	return err
 }
 
 // SaveIncremental exports the changes since the last call to [Doc.Save] or
 // [Doc.SaveIncremental] for passing to [Doc.LoadIncremental] on a different doc.
 // See also [SyncState] for a more managed approach to syncing.
-func (d *Doc) SaveIncremental() ([]byte, error) {
+func (d *Doc) SaveIncremental() []byte {
 	cDoc, unlock := d.lock()
 	defer unlock()
 
-	b, err := call[*byteSpan](C.AMsaveIncremental(cDoc))
-	if err != nil {
-		return nil, err
-	}
-
-	return b.bytes(), nil
+	b := mustCall[*byteSpan](C.AMsaveIncremental(cDoc))
+	return b.bytes()
 }
 
 // LoadIncremental applies the changes exported by [Doc.SaveIncremental].
@@ -300,47 +353,66 @@ func (d *Doc) LoadIncremental(raw []byte) error {
 }
 
 // Fork returns a new, independent, copy of the document
-// if asOf == nil then it is forked in its current state.
-// otherwise it returns a version as of the given Change Hashes.
-func (d *Doc) Fork(asOf *ChangeHashes) (*Doc, error) {
+// if asOf is empty then it is forked in its current state.
+// otherwise it returns a version as of the given heads.
+func (d *Doc) Fork(asOf ...ChangeHash) (*Doc, error) {
 	cDoc, unlock := d.lock()
 	defer unlock()
 
-	if asOf == nil {
+	if len(asOf) == 0 {
 		return call[*Doc](C.AMfork(cDoc, nil))
 	}
 
-	defer runtime.KeepAlive(asOf)
-	return call[*Doc](C.AMfork(cDoc, &asOf.v))
+	chs, err := newChangeHashes(asOf)
+	if err != nil {
+		return nil, err
+	}
+
+	defer runtime.KeepAlive(chs)
+	return call[*Doc](C.AMfork(cDoc, &chs.v))
 }
 
 // Merge extracts all changes from d2 that are not in d
 // and then applies them to d.
-func (d *Doc) Merge(d2 *Doc) (*ChangeHashes, error) {
+func (d *Doc) Merge(d2 *Doc) ([]ChangeHash, error) {
 	cDoc, unlock := d.lock()
 	defer unlock()
 
 	cDoc2, unlock2 := d2.lock()
 	defer unlock2()
 
-	return call[*ChangeHashes](C.AMmerge(cDoc, cDoc2))
+	ret, err := call[*changeHashes](C.AMmerge(cDoc, cDoc2))
+	if err != nil {
+		return nil, err
+	}
+	return ret.Get(), nil
 }
 
-// ActorID returns the current actorId of the doc.
-func (d *Doc) ActorID() (*ActorID, error) {
+// ActorID returns the current actorId of the doc hex-encoded
+// This is used for all operations that write to the document.
+// By default a random ActorID is generated, but you can customize
+// this with [Doc.SetActorID].
+func (d *Doc) ActorID() string {
 	cDoc, unlock := d.lock()
 	defer unlock()
 
-	return call[*ActorID](C.AMgetActorId(cDoc))
+	a := mustCall[*actorID](C.AMgetActorId(cDoc))
+	return a.String()
 }
 
 // SetActorID updates the current actorId of the doc.
-func (d *Doc) SetActorID(ai *ActorID) error {
+// Valid actor IDs are a string with an even number of hex-digits.
+func (d *Doc) SetActorID(id string) error {
+	ai, err := newActorID(id)
+	if err != nil {
+		return err
+	}
+
 	cDoc, unlock := d.lock()
 	defer unlock()
 	defer runtime.KeepAlive(ai)
 
-	_, err := call[*void](C.AMsetActorId(cDoc, ai.v))
+	_, err = call[*void](C.AMsetActorId(cDoc, ai.v))
 	return err
 }
 
@@ -416,67 +488,157 @@ func (uv *uintValue) init(r *C.AMresult) error {
 	return nil
 }
 
-// Changes represent a set of changes applied to a doc
-type Changes struct {
-	v C.AMchanges
+type changeSet struct {
+	v     C.AMchanges
+	empty bool
 }
 
-func (cs *Changes) init(r *C.AMresult) error {
-	if tag := C.AMresultValueTag(r); tag != C.AM_VALUE_CHANGES {
-		return fmt.Errorf("expected VALUE_CHANGE_HASHES, got %v", tag)
+func (cs *changeSet) init(r *C.AMresult) error {
+	tag := C.AMresultValueTag(r)
+	if tag == C.AM_VALUE_VOID {
+		cs.empty = true
+		return nil
+	}
+	if tag != C.AM_VALUE_CHANGES {
+		return fmt.Errorf("expected VALUE_CHANGES, got %v", tag)
 	}
 	cs.v = C.AMresultValueChanges(r)
 	return nil
 }
 
-// LoadChanges loads Changes from bytes returned by [Changes.Save]
-func LoadChanges(raw []byte) (*Changes, error) {
+// LoadChanges loads changes from bytes (see also [SaveChanges] and [Change.Save])
+func LoadChanges(raw []byte) ([]*Change, error) {
 	cBytes, free := toByteSpan(raw)
 	defer free()
 
-	return call[*Changes](C.AMchangeLoadDocument(cBytes.src, cBytes.count))
+	ret, err := call[*changeSet](C.AMchangeLoadDocument(cBytes.src, cBytes.count))
+	if err != nil {
+		return nil, err
+	}
+	return ret.Changes(), nil
 }
 
-// Save saves the Changes to bytes to be passed to [LoadChanges]
-func (cs *Changes) Save() []byte {
+// SaveChanges saves multiple changes to bytes (see also [LoadChanges])
+func SaveChanges(cs []*Change) []byte {
 	out := []byte{}
 
-	cs2 := C.AMchangesRewound(&cs.v)
+	for _, c := range cs {
+		out = append(out, c.Save()...)
+	}
+	return out
+}
+
+func (cs *changeSet) Changes() []*Change {
+	if cs.empty {
+		return []*Change{}
+	}
+
 	defer runtime.KeepAlive(cs)
+	cs2 := C.AMchangesRewound(&cs.v)
+
+	out := []*Change{}
+
 	for {
 		c := C.AMchangesNext(&cs2, 1)
 		if c == (*C.AMchange)(C.NULL) {
 			break
 		}
-
-		b := C.AMchangeRawBytes(c)
-		out = append(out, fromByteSpan(b)...)
+		out = append(out, &Change{cs: cs, v: c})
 	}
 	return out
+}
+
+// Change is a set of mutations to the document. It is analagous
+// to a commit in a version control system like Git.
+type Change struct {
+	cs *changeSet
+	v  *C.AMchange
+}
+
+// ActorID identifies the actor that made the change hex-encoded
+func (c *Change) ActorID() string {
+	defer runtime.KeepAlive(c.cs)
+	ai := mustCall[*actorID](C.AMchangeActorId(c.v))
+	return ai.String()
+}
+
+// ActorSeq is 1 for the first change by a given
+// actor, 2 for the next, and so on.
+func (c *Change) ActorSeq() uint64 {
+	defer runtime.KeepAlive(c.cs)
+	return uint64(C.AMchangeSeq(c.v))
+}
+
+// Hash identifies the change by the SHA-256 of its binary representation
+func (c *Change) Hash() ChangeHash {
+	defer runtime.KeepAlive(c.cs)
+	return ChangeHash(fromByteSpan(C.AMchangeHash(c.v)))
+}
+
+// Dependencies returns the hashes of all changes that this change
+// directly depends on.
+func (c *Change) Dependencies() []ChangeHash {
+	defer runtime.KeepAlive(c.cs)
+
+	chs := C.AMchangeDeps(c.v)
+	return (&changeHashes{v: chs}).Get()
+}
+
+// Message returns the commit message (if any)
+func (c *Change) Message() string {
+	defer runtime.KeepAlive(c.cs)
+	return fromByteSpanStr(C.AMchangeMessage(c.v))
+}
+
+// Timestamp returns the commit time (or the zero time if one was not set)
+func (c *Change) Timestamp() time.Time {
+	defer runtime.KeepAlive(c.cs)
+	return time.UnixMilli(int64(C.AMchangeTime(c.v)))
+}
+
+// Save exports the change for transferring between systems
+func (c *Change) Save() []byte {
+	defer runtime.KeepAlive(c.cs)
+	return fromByteSpan(C.AMchangeRawBytes(c.v))
 }
 
 // ChangeHashes are used to represent a version of the document
 // As automerge is a distributed protocol there may be many valid
 // "most recent" changes, so this may be a list rather than a single hash.
-type ChangeHashes struct {
-	v C.AMchangeHashes
+type changeHashes struct {
+	v     C.AMchangeHashes
+	empty bool
 }
 
-// NewChangeHashes initializes a ChangeHashes from a list of ChangeHash's
-func NewChangeHashes(chs []ChangeHash) (*ChangeHashes, error) {
-	panic("todo")
-}
-
-func (ch *ChangeHashes) init(r *C.AMresult) error {
-	if tag := C.AMresultValueTag(r); tag != C.AM_VALUE_CHANGE_HASHES {
+func (ch *changeHashes) init(r *C.AMresult) error {
+	tag := C.AMresultValueTag(r)
+	if tag == C.AM_VALUE_VOID {
+		ch.empty = true
+		return nil
+	}
+	if tag != C.AM_VALUE_CHANGE_HASHES {
 		return fmt.Errorf("expected VALUE_CHANGE_HASHES, got %v", tag)
 	}
 	ch.v = C.AMresultValueChangeHashes(r)
 	return nil
 }
 
-// Get returns the change hashes for further inspection
-func (ch *ChangeHashes) Get() []ChangeHash {
+func newChangeHashes(ch []ChangeHash) (*changeHashes, error) {
+	arr := []C.AMbyteSpan{}
+	for _, c := range ch {
+		bs, free := toByteSpan([]byte(c))
+		defer free()
+		arr = append(arr, bs)
+	}
+
+	return call[*changeHashes](C.AMchangeHashesInit(&arr[0], C.size_t(len(arr))))
+}
+
+func (ch *changeHashes) Get() []ChangeHash {
+	if ch.empty {
+		return nil
+	}
+
 	defer runtime.KeepAlive(ch)
 
 	ch2 := C.AMchangeHashesRewound(&ch.v)
@@ -494,15 +656,7 @@ func (ch *ChangeHashes) Get() []ChangeHash {
 	return out
 }
 
-// Cmp returns -1 if ch < ch2, 0 if they are equal and 1 if ch > ch2
-func (ch *ChangeHashes) Cmp(ch2 *ChangeHashes) int {
-	defer runtime.KeepAlive(ch)
-	defer runtime.KeepAlive(ch2)
-
-	return int(C.AMchangeHashesCmp(&ch.v, &ch2.v))
-}
-
-// ChangeHash is a hash of a change
+// ChangeHash is a 32-byte SHA-256 hash of the change.
 type ChangeHash []byte
 
 // String returns the hex-encoded form of the change hash
@@ -706,7 +860,7 @@ func (m *Map) Del(key string) error {
 
 // Keys returns the current list of keys for the map
 func (m *Map) Keys() ([]string, error) {
-	i := m.Iter()
+	i := m.iter()
 	out := []string{}
 	for {
 		k, _, valid := i.Next()
@@ -751,7 +905,7 @@ func (m *Map) Get(key string) (*Value, error) {
 
 // load loads the map into go values (recrusively)
 func (m *Map) load() (map[string]any, error) {
-	iter := m.Iter()
+	iter := m.iter()
 
 	ret := map[string]any{}
 
@@ -774,31 +928,50 @@ func (m *Map) load() (map[string]any, error) {
 	return ret, nil
 }
 
-// Iter returns a MapItems to let you iterate over the contents of the Map.
-// You must check for errors by calling [MapItems.Error]
-func (m *Map) Iter() *MapItems {
+// Values returns the values of the map
+func (m *Map) Values() (map[string]*Value, error) {
+	i := m.iter()
+	ret := map[string]*Value{}
+	for {
+		k, v, valid := i.Next()
+		if !valid {
+			break
+		}
+
+		ret[k] = v
+	}
+
+	if err := i.Error(); err != nil {
+		return nil, err
+	}
+	return ret, nil
+}
+
+// Iter returns a mapItems to let you iterate over the contents of the Map.
+// You must check for errors by calling [mapItems.Error]
+func (m *Map) iter() *mapItems {
 	if m.objID == nil {
 		if m.path == nil {
-			return &MapItems{err: fmt.Errorf("automerge.Map: tried to read detached map")}
+			return &mapItems{err: fmt.Errorf("automerge.Map: tried to read detached map")}
 		}
 		v, err := m.path.Get()
 		if err != nil {
-			return &MapItems{err: err}
+			return &mapItems{err: err}
 		}
 		if v.Kind() == KindMap {
-			return v.Map().Iter()
+			return v.Map().iter()
 		} else if v.Kind() == KindVoid {
-			return &MapItems{}
+			return &mapItems{}
 		}
-		return &MapItems{err: fmt.Errorf("%#v: tried to interate over non-map %#v", m.path, v.val)}
+		return &mapItems{err: fmt.Errorf("%#v: tried to read non-map %#v", m.path, v.val)}
 	}
 
 	cDoc, cObj, unlock := m.lock()
 	defer unlock()
 
-	iter, err := call[*MapItems](C.AMmapRange(cDoc, cObj, C.AMstr(nil), C.AMstr(nil), nil))
+	iter, err := call[*mapItems](C.AMmapRange(cDoc, cObj, C.AMstr(nil), C.AMstr(nil), nil))
 	if err != nil {
-		return &MapItems{err: err}
+		return &mapItems{err: err}
 	}
 	iter.m = m
 	return iter
@@ -809,7 +982,7 @@ func (m *Map) GoString() string {
 	if m.objID == nil {
 		return "&automerge.Map{}"
 	}
-	iter := m.Iter()
+	iter := m.iter()
 	sofar := "&automerge.Map{"
 	i := 0
 	for {
@@ -842,8 +1015,7 @@ func (m *Map) GoString() string {
 	return sofar + "}"
 }
 
-// MapItems is an iterator over the contents of a Map
-type MapItems struct {
+type mapItems struct {
 	r *C.AMresult
 	v C.AMmapItems
 	m *Map
@@ -851,7 +1023,7 @@ type MapItems struct {
 	err error
 }
 
-func (mi *MapItems) init(r *C.AMresult) error {
+func (mi *mapItems) init(r *C.AMresult) error {
 	if tag := C.AMresultValueTag(r); tag != C.AM_VALUE_MAP_ITEMS {
 		return fmt.Errorf("expected VALUE_MAP_ITEMS, got %v", tag)
 	}
@@ -863,7 +1035,7 @@ func (mi *MapItems) init(r *C.AMresult) error {
 
 // Next returns either the next key and value and true
 // or "", nil, false to indicate that there are no more items
-func (mi *MapItems) Next() (string, *Value, bool) {
+func (mi *mapItems) Next() (string, *Value, bool) {
 	if mi.err != nil || mi.r == nil {
 		return "", nil, false
 	}
@@ -889,10 +1061,11 @@ func (mi *MapItems) Next() (string, *Value, bool) {
 }
 
 // Error returns any error that occurred creating or using the iterator.
-func (mi *MapItems) Error() error {
+func (mi *mapItems) Error() error {
 	return mi.err
 }
 
+// List is an automerge type that stores a list of [Value]'s
 type List struct {
 	doc   *Doc
 	objID *objID
@@ -914,7 +1087,7 @@ func (l *List) lock() (*C.AMdoc, *C.AMobjId, func()) {
 }
 
 func (l *List) load() ([]any, error) {
-	iter := l.Iter()
+	iter := l.iter()
 
 	ret := make([]any, l.Len())
 
@@ -956,28 +1129,46 @@ func (l *List) Len() int {
 	return int(C.AMobjSize(cDoc, cObj, nil))
 }
 
-// Iter returns a ListItems to let you iterate over the contents of the List.
-// You must check for errors by calling [ListItems.Error]
-func (l *List) Iter() *ListItems {
+// Values returns a slice of the values in a list
+func (l *List) Values() ([]*Value, error) {
+	iter := l.iter()
+	var ret []*Value
+	for {
+		_, v, valid := iter.Next()
+		if !valid {
+			break
+		}
+		ret = append(ret, v)
+	}
+
+	if err := iter.Error(); err != nil {
+		return nil, err
+	}
+	return ret, nil
+}
+
+// iter returns a listItems to let you iterate over the contents of the List.
+// You must check for errors by calling [listItems.Error]
+func (l *List) iter() *listItems {
 	if l.objID == nil {
 		v, err := l.path.Get()
 		if err != nil {
-			return &ListItems{err: err}
+			return &listItems{err: err}
 		}
 		if v.Kind() == KindList {
-			return v.List().Iter()
+			return v.List().iter()
 		} else if v.Kind() == KindVoid {
-			return &ListItems{}
+			return &listItems{}
 		}
-		return &ListItems{err: fmt.Errorf("%#v: tried to interate over non-list %#v", l.path, v.val)}
+		return &listItems{err: fmt.Errorf("%#v: tried read non-list %#v", l.path, v.val)}
 	}
 
 	cDoc, cObj, unlock := l.lock()
 	defer unlock()
 
-	iter, err := call[*ListItems](C.AMlistRange(cDoc, cObj, 0, C.SIZE_MAX, nil))
+	iter, err := call[*listItems](C.AMlistRange(cDoc, cObj, 0, C.SIZE_MAX, nil))
 	if err != nil {
-		return &ListItems{err: err}
+		return &listItems{err: err}
 	}
 	iter.l = l
 	return iter
@@ -1061,7 +1252,7 @@ func (l *List) GoString() string {
 	if l.objID == nil {
 		return "&automerge.Map{}"
 	}
-	iter := l.Iter()
+	iter := l.iter()
 	sofar := "&automerge.List{"
 	i := 0
 	for {
@@ -1221,8 +1412,8 @@ func (l *List) put(i C.size_t, before bool, value any) error {
 	return err
 }
 
-// ListItems is an iterator over the contents of a List
-type ListItems struct {
+// listItems is an iterator over the contents of a List
+type listItems struct {
 	r *C.AMresult
 	v C.AMlistItems
 	l *List
@@ -1230,7 +1421,7 @@ type ListItems struct {
 	err error
 }
 
-func (li *ListItems) init(r *C.AMresult) error {
+func (li *listItems) init(r *C.AMresult) error {
 	if tag := C.AMresultValueTag(r); tag != C.AM_VALUE_LIST_ITEMS {
 		return fmt.Errorf("expected VALUE_LIST_ITEMS, got %v", tag)
 	}
@@ -1242,7 +1433,7 @@ func (li *ListItems) init(r *C.AMresult) error {
 
 // Next returns either the next index and value and true
 // or 0, nil, false to indicate that there are no more items
-func (li *ListItems) Next() (int, *Value, bool) {
+func (li *listItems) Next() (int, *Value, bool) {
 	if li.err != nil {
 		return 0, nil, false
 	}
@@ -1265,7 +1456,7 @@ func (li *ListItems) Next() (int, *Value, bool) {
 }
 
 // Error returns any error that occurred creating or using the iterator.
-func (li *ListItems) Error() error {
+func (li *listItems) Error() error {
 	return li.err
 }
 
@@ -1283,7 +1474,7 @@ type Counter struct {
 }
 
 // NewCounter returns a detached counter with the given starting value.
-// Before you can Get() or Inc() you must write it to the document.
+// Before you can call [Counter.Get] or [Counter.Inc] you must write it to the document.
 func NewCounter(v int64) *Counter {
 	return &Counter{val: v}
 }
@@ -1522,11 +1713,7 @@ func (ss *SyncState) init(r *C.AMresult) error {
 
 // NewSyncState returns a new sync state to sync with a peer
 func NewSyncState(d *Doc) *SyncState {
-	ss, err := call[*SyncState](C.AMsyncStateInit())
-	// This call cannot error
-	if err != nil {
-		panic(err)
-	}
+	ss := mustCall[*SyncState](C.AMsyncStateInit())
 	ss.doc = d
 	return ss
 }
@@ -1565,25 +1752,18 @@ func (ss *SyncState) ReceiveMessage(msg []byte) error {
 // GenerateMessage generates the next message to send to the client.
 // If `valid` is false the clients are currently in sync and there are
 // no more messages to send (until you either modify the underlying document)
-func (ss *SyncState) GenerateMessage() (bytes []byte, valid bool, err error) {
+func (ss *SyncState) GenerateMessage() (bytes []byte, valid bool) {
 	defer runtime.KeepAlive(ss)
 	cDoc, unlock := ss.doc.lock()
 	defer unlock()
 
-	sm, err := call[*syncMessage](C.AMgenerateSyncMessage(cDoc, ss.val))
+	sm := mustCall[*syncMessage](C.AMgenerateSyncMessage(cDoc, ss.val))
 
-	if err != nil {
-		return nil, false, err
-	}
 	if !sm.valid {
-		return nil, false, nil
+		return nil, false
 	}
 
-	b, err := sm.save()
-	if err != nil {
-		return nil, false, err
-	}
-	return b, true, nil
+	return sm.save(), true
 }
 
 // Save serializes the sync state so that you can resume it later.
@@ -1627,16 +1807,13 @@ func loadSyncMessage(msg []byte) (*syncMessage, error) {
 	return call[*syncMessage](C.AMsyncMessageDecode(cBytes.src, cBytes.count))
 }
 
-func (sm *syncMessage) save() ([]byte, error) {
+func (sm *syncMessage) save() []byte {
 	if !sm.valid {
-		return nil, nil
+		return nil
 	}
 	defer runtime.KeepAlive(sm)
-	b, err := call[*byteSpan](C.AMsyncMessageEncode(sm.v))
-	if err != nil {
-		return nil, err
-	}
-	return b.bytes(), nil
+	b := mustCall[*byteSpan](C.AMsyncMessageEncode(sm.v))
+	return b.bytes()
 }
 
 // Value represents a dynamically typed value read from a document.
@@ -1881,6 +2058,18 @@ func createValue(d *Doc, r *C.AMresult) (*Value, error) {
 		C.AMfree(r)
 		return nil, fmt.Errorf("automerge: invalid result status")
 	}
+}
+
+// mustCall can be used when the rust bindings always return OK
+func mustCall[T interface {
+	*X
+	initer
+}, X any](r *C.AMresult) T {
+	ret, err := call[T, X](r)
+	if err != nil {
+		panic(err)
+	}
+	return ret
 }
 
 func call[T interface {

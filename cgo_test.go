@@ -2,6 +2,7 @@ package automerge_test
 
 import (
 	"encoding/base64"
+	"encoding/hex"
 	"runtime"
 	"testing"
 	"time"
@@ -11,51 +12,29 @@ import (
 )
 
 func TestActorID(t *testing.T) {
-	a := automerge.NewActorID()
 
-	b, err := automerge.ActorIDFromString(a.String())
-	require.NoError(t, err)
-
-	c, err := automerge.ActorIDFromBytes(b.Bytes())
-	require.NoError(t, err)
-
-	require.Equal(t, 0, a.Cmp(c))
-	require.Equal(t, 0, b.Cmp(a))
-
-	d, err := automerge.ActorIDFromString("x")
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "nvalid actor ID")
-	require.Nil(t, d)
-
-	// e, err := automerge.ActorIDFromBytes([]byte{})
-	// require.Error(t, err)
-	// require.Equal(t, "Invalid actor ID: x", err.Error())
-	// require.Nil(t, e)
-
-	f, err := automerge.ActorIDFromString("abcd")
-	require.NoError(t, err)
-	g, err := automerge.ActorIDFromString("cdef")
-	require.NoError(t, err)
-
-	require.Equal(t, -1, f.Cmp(g))
-	require.Equal(t, 1, g.Cmp(f))
+	f := hex.EncodeToString([]byte{0, 1, 2, 3})
 
 	doc := automerge.New()
 	require.NoError(t, doc.SetActorID(f))
-	f2, err := doc.ActorID()
-	require.NoError(t, err)
-	require.Equal(t, f.String(), f2.String())
+	f2 := doc.ActorID()
+	require.Equal(t, f, f2)
 }
 
 func TestDoc(t *testing.T) {
 	d := automerge.New()
 
-	err := d.RootMap().Set("x", "bloop")
+	b := d.Save()
+	_, err := automerge.Load(b)
 	require.NoError(t, err)
 
-	b, err := d.Save()
+	err = d.RootMap().Set("x", "bloop")
 	require.NoError(t, err)
 
+	_, err = d.Commit("boop")
+	require.NoError(t, err)
+
+	b = d.Save()
 	d, err = automerge.Load(b)
 	require.NoError(t, err)
 
@@ -117,11 +96,10 @@ func TestDoc_Fork(t *testing.T) {
 	ch, err := d.Commit("initial version")
 	require.NoError(t, err)
 
-	ch2, err := d.Heads()
-	require.NoError(t, err)
-	require.Equal(t, 0, ch.Cmp(ch2))
+	ch2 := d.Heads()
+	require.Equal(t, 1, len(ch2))
 
-	require.Equal(t, ch.Get()[0].String(), ch2.Get()[0].String())
+	require.Equal(t, ch.String(), ch2[0].String())
 
 	require.NoError(t, d.RootMap().Set("x", 2))
 
@@ -137,9 +115,51 @@ func TestDoc_Fork(t *testing.T) {
 	require.Equal(t, v2, 1)
 }
 
-func TestDoc_Errors(t *testing.T) {
-	ai, err := automerge.ActorIDFromString("5a1aac51ffc84d6cb7b72c626b35f962")
+func TestDoc_Commit(t *testing.T) {
+	d := automerge.New()
+	before := time.UnixMilli(time.Now().UnixMilli())
+	require.NoError(t, d.RootMap().Set("x", "y"))
+	ch, err := d.Commit("boop")
 	require.NoError(t, err)
+
+	cs, err := d.Changes()
+	require.NoError(t, err)
+
+	require.Equal(t, 1, len(cs))
+	c := cs[0]
+
+	require.Equal(t, ch, c.Hash())
+	require.GreaterOrEqual(t, c.Timestamp(), before)
+	require.Equal(t, "boop", c.Message())
+	require.Equal(t, d.ActorID(), c.ActorID())
+
+	d = automerge.New()
+	_, err = d.Commit("boop")
+	require.ErrorContains(t, err, "Commit is empty")
+
+	then := time.UnixMilli((time.Now().Add(-100 * time.Second).UnixMilli()))
+
+	ch, err = d.Commit("boop", automerge.CommitOptions{AllowEmpty: true, Time: &then})
+	require.NoError(t, err)
+
+	c, err = d.Change(ch)
+	require.NoError(t, err)
+	require.Equal(t, c.Timestamp(), then)
+
+	require.NoError(t, d.RootMap().Set("l", "mnop"))
+	_, err = d.Commit("\xff")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid UTF-8")
+
+	ch[0] += 1
+	_, err = d.Change(ch)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "does not correspond")
+
+}
+
+func TestDoc_Errors(t *testing.T) {
+	ai := automerge.NewActorID()
 	d := automerge.New()
 	d2 := automerge.New()
 	d.SetActorID(ai)
@@ -148,8 +168,9 @@ func TestDoc_Errors(t *testing.T) {
 	require.NoError(t, d.RootMap().Set("x", map[string]any{"x": 1}))
 	require.NoError(t, d2.RootMap().Set("y", map[string]any{"y": 1}))
 
-	_, err = d.Merge(d2)
-	require.EqualError(t, err, "duplicate seq 1 found for actor 5a1aac51ffc84d6cb7b72c626b35f962")
+	_, err := d.Merge(d2)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "duplicate seq 1 found for actor")
 }
 
 func testGet[T any](t *testing.T, m *automerge.Map, k string, v T) {
@@ -232,30 +253,21 @@ func TestLoad(t *testing.T) {
 	doc, err = automerge.Load(b)
 	require.NoError(t, err)
 
-	iter := doc.RootMap().Iter()
-	for {
-		k, v, valid := iter.Next()
-		if !valid {
-			break
-		}
+	m, err := doc.RootMap().Values()
+	require.NoError(t, err)
+	require.Len(t, m, 1)
+	for k, v := range m {
 		require.Equal(t, "o\x00ps", k)
 		require.Equal(t, "oops", v.Str())
 	}
-	require.NoError(t, iter.Error())
 }
 
 func TestMap_Path(t *testing.T) {
 	doc := automerge.New()
 
-	i := doc.Path("x").Map().Iter()
-	for {
-		_, _, valid := i.Next()
-		if !valid {
-			break
-		}
-		t.Fatal("expected non-extant map to have no items")
-	}
-	require.NoError(t, i.Error())
+	m, err := doc.Path("x").Map().Values()
+	require.NoError(t, err)
+	require.Len(t, m, 0)
 
 	require.Equal(t, 0, doc.Path("x").Map().Len())
 
@@ -285,31 +297,13 @@ func TestMap_Path(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, b)
 
-	iter := doc.Path("y", 0).Map().Iter()
-	for {
-		k, v, valid := iter.Next()
-		if !valid {
-			break
-		}
-		require.Equal(t, "y", k)
-		require.Equal(t, true, v.Bool())
+	m, err = doc.Path("y", 0).Map().Values()
+	require.NoError(t, err)
+	require.Len(t, m, 1)
+	require.Equal(t, true, m["y"].Bool())
 
-	}
-	require.NoError(t, iter.Error())
-
-	_, _, valid := iter.Next()
-	require.False(t, valid)
-	require.NoError(t, iter.Error())
-
-	iter = doc.Path("y").Map().Iter()
-	for {
-		_, _, valid := iter.Next()
-		if !valid {
-			break
-		}
-		t.Fatalf("expected no valid iterations")
-	}
-	require.EqualError(t, iter.Error(), "&automerge.Path{\"y\"}: tried to interate over non-map &automerge.List{&automerge.Map{...}}")
+	_, err = doc.Path("y").Map().Values()
+	require.EqualError(t, err, "&automerge.Path{\"y\"}: tried to read non-map &automerge.List{&automerge.Map{...}}")
 }
 
 func TestList(t *testing.T) {
@@ -362,8 +356,7 @@ func TestList(t *testing.T) {
 		[]any{"a", "b", "c"}, map[string]any{"🧟": "🛩"},
 		int64(1), "a", map[string]any{}, []any{}}, out)
 
-	bytes, err := doc.Save()
-	require.NoError(t, err)
+	bytes := doc.Save()
 
 	doc, err = automerge.Load(bytes)
 	require.NoError(t, err)
@@ -440,37 +433,17 @@ func TestList_Path(t *testing.T) {
 
 	require.Equal(t, 2, doc.Path("z").List().Len())
 
-	i := doc.Path("y").List().Iter()
-	for {
-		i, v, valid := i.Next()
-		if !valid {
-			break
-		}
-		require.Equal(t, i, 0)
-		require.Equal(t, v.Str(), "b")
-	}
+	l, err := doc.Path("y").List().Values()
+	require.NoError(t, err)
+	require.Len(t, l, 1)
+	require.Equal(t, "b", l[0].Str())
 
-	require.NoError(t, i.Error())
+	l, err = doc.Path("no").List().Values()
+	require.NoError(t, err)
+	require.Len(t, l, 0)
 
-	i = doc.Path("no").List().Iter()
-	for {
-		_, _, valid := i.Next()
-		if !valid {
-			break
-		}
-		t.Fatal("expected non-extant list to have no items")
-	}
-	require.NoError(t, i.Error())
-
-	i = doc.Path("y", 0).List().Iter()
-	for {
-		_, _, valid := i.Next()
-		if !valid {
-			break
-		}
-		t.Fatal("expected non-list to have no items")
-	}
-	require.EqualError(t, i.Error(), "&automerge.Path{\"y\", 0}: tried to interate over non-list \"b\"")
+	_, err = doc.Path("y", 0).List().Values()
+	require.EqualError(t, err, "&automerge.Path{\"y\", 0}: tried read non-list \"b\"")
 
 	v, err := doc.Path("no", 3).Get()
 	require.NoError(t, err)
@@ -534,7 +507,7 @@ func TestText(t *testing.T) {
 	txt := automerge.NewText("hello world")
 	require.NoError(t, doc.RootMap().Set("x", txt))
 
-	doc2, err := doc.Fork(nil)
+	doc2, err := doc.Fork()
 	require.NoError(t, err)
 
 	txt2, err := automerge.As[*automerge.Text](doc2.RootMap().Get("x"))
@@ -592,20 +565,23 @@ type Sandwich struct {
 	Filling []string
 }
 
-func TestChanges(t *testing.T) {
+func TestDoc_Changes(t *testing.T) {
 	doc := automerge.New()
 
-	heads, err := doc.Heads()
-	require.NoError(t, err)
+	heads := doc.Heads()
 
 	require.NoError(t, doc.Path("test").Set(&Sandwich{"rye", []string{"pastrami", "mustard"}}))
-	changes, err := doc.Changes(heads)
+	commit1, err := doc.Commit("boop")
+	require.NoError(t, err)
+	changes, err := doc.Changes(heads...)
 	require.NoError(t, err)
 
 	doc2 := automerge.New()
 	require.NoError(t, doc2.Path("wow").Set(&Sandwich{Bread: "dutch crunch", Filling: []string{"brie", "cranberry"}}))
+	_, err = doc2.Commit("boop2")
+	require.NoError(t, err)
 
-	require.NoError(t, doc2.Apply(changes))
+	require.NoError(t, doc2.Apply(changes...))
 
 	require.Equal(t, 2, doc2.RootMap().Len())
 	v, err := automerge.As[map[string]*Sandwich](doc2.Root())
@@ -613,13 +589,18 @@ func TestChanges(t *testing.T) {
 	require.Equal(t, "rye", v["test"].Bread)
 	require.Equal(t, []string{"brie", "cranberry"}, v["wow"].Filling)
 
-	bytes := changes.Save()
+	diff, err := doc2.Changes(commit1)
+	require.NoError(t, err)
+	require.Len(t, diff, 1)
+	require.Equal(t, "boop2", diff[0].Message())
+
+	bytes := automerge.SaveChanges(changes)
 	require.NoError(t, err)
 	changes, err = automerge.LoadChanges(bytes)
 	require.NoError(t, err)
 
 	doc3 := automerge.New()
-	require.NoError(t, doc3.Apply(changes))
+	require.NoError(t, doc3.Apply(changes...))
 
 	require.Equal(t, 1, doc3.RootMap().Len())
 	keys, err := doc3.RootMap().Keys()
@@ -627,34 +608,43 @@ func TestChanges(t *testing.T) {
 	require.Equal(t, []string{"test"}, keys)
 
 	doc4 := automerge.New()
-	changes, err = doc2.Changes(nil)
+	changes, err = doc2.Changes()
 	require.NoError(t, err)
-	require.NoError(t, doc4.Apply(changes))
+	require.NoError(t, doc4.Apply(changes...))
 
 	v4, err := automerge.As[map[string]*Sandwich](doc2.Root())
 	require.NoError(t, err)
 	require.Equal(t, v, v4)
+
+	_, err = doc3.Changes(automerge.ChangeHash{'a'})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "nvalid change hash")
+
+	commit1[0] += 1
+	_, err = doc3.Changes(commit1)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "does not correspond to a change")
+
+	_, err = automerge.LoadChanges([]byte{'\xf1'})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unable to parse")
 }
 
 func TestIncremental(t *testing.T) {
 	doc := automerge.New()
 
-	b, err := doc.Save()
-	require.NoError(t, err)
-
+	b := doc.Save()
 	doc2, err := automerge.Load(b)
 	require.NoError(t, err)
 
 	require.NoError(t, doc.Path("wow").Set(automerge.NewCounter(10)))
 
-	b, err = doc.SaveIncremental()
-	require.NoError(t, err)
+	b = doc.SaveIncremental()
 	require.NoError(t, doc2.LoadIncremental(b))
 
 	require.NoError(t, doc.Path("wow").Counter().Inc(10))
 
-	b, err = doc.SaveIncremental()
-	require.NoError(t, err)
+	b = doc.SaveIncremental()
 	require.NoError(t, doc2.LoadIncremental(b))
 
 	v, err := doc2.Path("wow").Counter().Get()
@@ -664,8 +654,7 @@ func TestIncremental(t *testing.T) {
 	require.NoError(t, doc.Path("wow").Counter().Inc(10))
 	require.NoError(t, doc2.Path("wow").Counter().Inc(-5))
 
-	b, err = doc.SaveIncremental()
-	require.NoError(t, err)
+	b = doc.SaveIncremental()
 	require.NoError(t, doc2.LoadIncremental(b))
 
 	v, err = doc2.Path("wow").Counter().Get()
@@ -689,15 +678,14 @@ func TestSyncState(t *testing.T) {
 		var err error
 
 		for {
-			m, valid1, err = cState.GenerateMessage()
-			require.NoError(t, err)
+			m, valid1 = cState.GenerateMessage()
 
 			if !valid1 {
 				break
 			}
 			require.NoError(t, sState.ReceiveMessage(m))
 
-			m, valid2, err = sState.GenerateMessage()
+			m, valid2 = sState.GenerateMessage()
 			require.NoError(t, err)
 			if !valid2 {
 				break
