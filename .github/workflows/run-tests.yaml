@@ -1,0 +1,21 @@
+name: test-automerge-go
+run-name: "Testing automerge go"
+on: [push]
+jobs:
+  test-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-go@v3
+        with:
+          go-version: 'stable'
+      - run: go test
+      - run: go run honnef.co/go/tools/cmd/staticcheck -checks all
+  test-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-go@v3
+        with:
+          go-version: 'stable'
+      - run: go test
