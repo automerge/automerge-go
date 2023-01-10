@@ -582,6 +582,10 @@ typedef struct AMsyncHaves {
   uint8_t detail[+8+8+8+8];
 } AMsyncHaves;
 
+
+
+
+
 /**
  * \memberof AMactorId
  * \brief Gets the value of an actor identifier as a sequence of bytes.
