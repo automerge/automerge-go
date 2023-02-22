@@ -1,6 +1,6 @@
 package automerge
 
-//go:generate go run generate/gen.go
+//go:generate go run deps/generate/gen.go
 
 /*
 #cgo LDFLAGS: -lautomerge

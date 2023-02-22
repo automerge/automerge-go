@@ -42,7 +42,7 @@ func main() {
 		idx := strings.LastIndexAny(line, " *")
 
 		signature := line[0 : idx+1]
-		name := line[idx+1 : len(line)]
+		name := line[idx+1:]
 
 		suffix := strcase.ToCamel(name)
 
