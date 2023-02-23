@@ -54,4 +54,4 @@ jobs:
 
       - name: Run simplest linter
         if: ${{ matrix.runner == 'ubuntu-latest' }}
-        run: go run honnef.co/go/tools/cmd/staticcheck -checks all
+        run: go run honnef.co/go/tools/cmd/staticcheck -checks all ./...
