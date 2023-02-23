@@ -53,4 +53,5 @@ jobs:
         run: go test -v -count=1 -shuffle=on ./...
 
       - name: Run simplest linter
+        if: ${{ matrix.runner == 'ubuntu-latest' }}
         run: go run honnef.co/go/tools/cmd/staticcheck -checks all
