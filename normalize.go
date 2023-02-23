@@ -16,7 +16,7 @@ func normalize(value any) (any, error) {
 	switch v := value.(type) {
 	case bool, string, []byte, int64, uint64, float64,
 		time.Time, map[string]any, []any,
-		*Counter, *Text, *Map, *List, *void:
+		*Counter, *Text, *Map, *List:
 		return value, nil
 	case int:
 		return float64(v), nil
@@ -91,10 +91,7 @@ func As[T any](v *Value, errs ...error) (ret T, err error) {
 
 	default:
 		var val any
-		val, err = v.goValue()
-		if err != nil {
-			return
-		}
+		val = v.goValue()
 		if r, ok := val.(T); ok {
 			return r, nil
 		}
