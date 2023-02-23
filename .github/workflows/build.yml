@@ -13,12 +13,13 @@ on:
 jobs:
   run:
     name: Build
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 5
     strategy:
       fail-fast: true
       matrix:
         go: ['stable', 'oldstable']
+        runner: ['ubuntu-latest', 'macos-latest']
 
     steps:
       - name: Install Go
