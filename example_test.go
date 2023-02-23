@@ -9,12 +9,19 @@ import (
 func ExampleAs() {
 	doc := automerge.New()
 	doc.Path("isValid").Set(true)
+	doc.Path("foo", "bar").Set("baz")
 
 	b, err := automerge.As[bool](doc.Path("isValid").Get())
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println(b == true)
+	fmt.Println("isValid:", b == true)
+
+	v, err := automerge.As[string](doc.Path("foo", "bar").Get())
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("foo-bar:", v)
 
 	type S struct {
 		IsValid bool `json:"isValid"`
@@ -23,7 +30,12 @@ func ExampleAs() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println(s.IsValid == true)
+	fmt.Println("root valid:", s.IsValid == true)
+
+	// Output:
+	// isValid: true
+	// foo-bar: baz
+	// root valid: true
 }
 
 func ExampleSyncState() {
