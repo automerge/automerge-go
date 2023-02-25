@@ -92,15 +92,13 @@ func readSLEB(b []byte) (int64, []byte, error) {
 	}
 }
 
-func addHeader(b []byte, kind byte) []byte {
-	output := append([]byte{133, 111, 74, 131, 0, 0, 0, 0, kind}, append(leb128(uint64(len(b))), b...)...)
-	hash := sha256.Sum256(output[8:])
-	output[4] = hash[0]
-	output[5] = hash[1]
-	output[6] = hash[2]
-	output[7] = hash[3]
+var magicBytes = [4]byte{133, 111, 74, 131}
 
-	return output
+func addHeader(b []byte, kind byte) []byte {
+	encodedLength := leb128(uint64(len(b)))
+	payload := append(append([]byte{kind}, encodedLength...), b...)
+	hash := sha256.Sum256(payload)
+	return append(append(magicBytes[:], hash[:4]...), payload...)
 }
 
 func main() {
@@ -298,7 +296,14 @@ func prettyPrintChunk(b []byte) []byte {
 	i, chunk, err := readULEB(b[9:])
 	lebLength := len(b) - len(chunk) - 9
 
-	hash := sha256.Sum256(b[8 : 8+1+lebLength+int(i)])
+	chunkEnd := 8 + 1 + lebLength + int(i)
+
+	if len(b) < chunkEnd {
+		chunkEnd = len(b)
+		err = fmt.Errorf("longer than remaining data: %v", len(b))
+	}
+
+	hash := sha256.Sum256(b[8:chunkEnd])
 
 	if t == 2 {
 		pBytes(b[4:8], "checksum (not validated)")
