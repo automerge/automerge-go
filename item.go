@@ -77,6 +77,7 @@ var kindDescriptions = map[Kind]string{
 	kindSyncMessage: "kindSyncMessage",
 }
 
+// String returns a human-readable representation of the Kind
 func (k Kind) String() string {
 	if s, ok := kindDescriptions[k]; ok {
 		return s

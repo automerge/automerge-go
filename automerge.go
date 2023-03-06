@@ -44,7 +44,7 @@ the recommended approach for reading is to cast the document to a go value:
 	doc, err := automerge.Load(bytes)
 	if err != nil { return err }
 
-	myVal, err := automerge.As[*myType](doc.RootValue())
+	myVal, err := automerge.As[*myType](doc.Root())
 	if err != nil { return err }
 
 If you wish to modify the document, or access just a subset, use a Path:
@@ -63,17 +63,8 @@ The automerge mutable types have additional methods. You can access these
 methods by calling [Path.Map], [Path.List], [Path.Text] or [Path.Counter] which
 assume the path is of the type you say it is:
 
-	iter := doc.Path("collection").Map().Iter()
-	for {
-		k, v, valid := iter.Next()
-		if !valid {
-			break
-		}
-		fmt.Println(k, v)
-	}
-	if err := iter.Error(); err != nil {
-		return err
-	}
+	values, err := doc.Path("collection").Map().Values()
+	fmt.Println(values)
 
 When you do this, any errors caused by traversing the path will be returned from
 methods called on the returned objects.

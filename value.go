@@ -111,7 +111,7 @@ func (v *Value) Str() string {
 	return v.val.(string)
 }
 
-// Bytes returns the Value as a string, it panics if Kind() != KindBytes
+// Bytes returns the Value as a []byte, it panics if Kind() != KindBytes
 func (v *Value) Bytes() []byte {
 	v.assertKind(KindBytes)
 	return v.val.([]byte)
