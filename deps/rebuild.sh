@@ -9,14 +9,11 @@ then
     exit 1
 fi
 
-which cargo || (
+which cargo || which cmake || (
     echo "Missing dependencies!"
     echo "See https://github.com/automerge/automerge-rs for instructions on setting up the build environment."
     exit 1
 )
-
-# cross@0.2.5 is broken on my machine: https://github.com/cross-rs/cross/issues/1214
-which cross || cargo install cross@0.2.4
 
 deps="$(realpath "$(dirname "$0")")"
 automerge_c="$deps/automerge-rs/rust/automerge-c"
@@ -38,19 +35,28 @@ mkdir -p "$deps/darwin_amd64"
 mkdir -p "$deps/linux_arm64"
 mkdir -p "$deps/linux_amd64"
 
-CBINDGEN_TARGET_DIR="$deps/.." cargo build -r --manifest-path="$automerge_c/Cargo.toml" --target aarch64-apple-darwin --target-dir "$deps/build"
-cp "$deps/build/aarch64-apple-darwin/release/libautomerge_core.a" "$deps/darwin_arm64/"
+cmake -B "$deps/build" -S "$automerge_c"
+cmake --build "$deps/build"
+cp "$deps/build/include/automerge-c/automerge.h" "$deps/.."
+cp "$deps/build/Cargo/target/aarch64-apple-darwin/release/libautomerge_core.a" "$deps/darwin_arm64"
 
 if [[ "$1" == "local" ]]; then
     exit
 fi
 
-cargo build -r --manifest-path="$automerge_c/Cargo.toml" --target x86_64-apple-darwin --target-dir "$deps/build"
-cp "$deps/build/x86_64-apple-darwin/release/libautomerge_core.a" "$deps/darwin_amd64/"
+# cross@0.2.5 is broken on my machine: https://github.com/cross-rs/cross/issues/1214
+which cross || cargo install cross@0.2.4
 
-cross build -r --manifest-path="$automerge_c/Cargo.toml" --target aarch64-unknown-linux-gnu --target-dir "$deps/build"
-cp "$deps/build/aarch64-unknown-linux-gnu/release/libautomerge_core.a" "$deps/linux_arm64/"
+function build() {
+    target="$1"
+    output="$2"
 
-cross build -r --manifest-path="$automerge_c/Cargo.toml" --target x86_64-unknown-linux-gnu --target-dir "$deps/build"
-cp "$deps/build/x86_64-unknown-linux-gnu/release/libautomerge_core.a" "$deps/linux_amd64/"
+    RUSTFLAGS="-C panic=abort" cross +nightly build --release --manifest-path="$automerge_c/Cargo.toml" -Z build-std=std,panic_abort --target "$target" --target-dir "$deps/build"
 
+    mkdir -p "$deps/$output"
+    cp "$deps/build/$target/release/libautomerge_core.a" "$deps/$output"
+}
+
+build x86_64-apple-darwin darwin_amd64
+build aarch64-unknown-linux-gnu linux_arm64
+build x86_64-unknown-linux-gnu linux_amd64
