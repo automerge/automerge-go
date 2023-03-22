@@ -30,15 +30,11 @@ elif [[ "$1" != "" ]]; then
 fi
 
 mkdir -p "$deps/build"
-mkdir -p "$deps/darwin_arm64"
-mkdir -p "$deps/darwin_amd64"
-mkdir -p "$deps/linux_arm64"
-mkdir -p "$deps/linux_amd64"
 
 cmake -B "$deps/build" -S "$automerge_c"
 cmake --build "$deps/build"
 cp "$deps/build/include/automerge-c/automerge.h" "$deps/.."
-cp "$deps/build/Cargo/target/aarch64-apple-darwin/release/libautomerge_core.a" "$deps/darwin_arm64"
+cp "$deps/build/Cargo/target/aarch64-apple-darwin/release/libautomerge_core.a" "$deps/libautomerge_core_darwin_arm64.a"
 
 if [[ "$1" == "local" ]]; then
     exit
@@ -53,10 +49,9 @@ function build() {
 
     RUSTFLAGS="-C panic=abort" cross +nightly build --release --manifest-path="$automerge_c/Cargo.toml" -Z build-std=std,panic_abort --target "$target" --target-dir "$deps/build"
 
-    mkdir -p "$deps/$output"
     cp "$deps/build/$target/release/libautomerge_core.a" "$deps/$output"
 }
 
-build x86_64-apple-darwin darwin_amd64
-build aarch64-unknown-linux-gnu linux_arm64
-build x86_64-unknown-linux-gnu linux_amd64
+build x86_64-apple-darwin libautomerge_core_darwin_amd64.a
+build aarch64-unknown-linux-gnu libautomerge_core_linux_arm64.a
+build x86_64-unknown-linux-gnu libautomerge_core_linux_amd64.a

@@ -1,18 +1,14 @@
 package automerge
 
 /*
-#cgo LDFLAGS: -lautomerge_core
-#cgo darwin,arm64 LDFLAGS: -L${SRCDIR}/deps/darwin_arm64
-#cgo darwin,amd64 LDFLAGS: -L${SRCDIR}/deps/darwin_amd64
-#cgo linux,arm64 LDFLAGS: -L${SRCDIR}/deps/linux_arm64 -lm
-#cgo linux,amd64 LDFLAGS: -L${SRCDIR}/deps/linux_amd64 -lm
-
 #include "automerge.h"
 */
 import "C"
 import (
 	"fmt"
 	"runtime"
+
+	_ "github.com/automerge/automerge-go/deps"
 )
 
 // result wraps an AMresult, and arranges for it to be AMfree'd after
