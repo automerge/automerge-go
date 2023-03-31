@@ -4,7 +4,30 @@ package automerge
 import "C"
 import "fmt"
 
-// Text is a mutable string that can be edited collaboratively
+// Text is a mutable unicode string that can be edited collaboratively.
+//
+// Note that automerge considers text to be a sequence of unicode codepoints
+// while most go code treats strings as a sequence of bytes (that are hopefully valid utf8).
+// In go programs unicode codepoints are stored as integers of type [rune], and the [unicode/utf8] package
+// provides some helpers for common operations.
+//
+// When editing Text you must pass positions and counts in terms of codepoints not bytes.
+// For example if you wanted to replace the first instance of "🙃" you could do something like this:
+//
+//	s, _ := text.Get() => "😀🙃"
+//	byteIndex := strings.Index(s, "🙃") => 4
+//	runeIndex := utf8.RuneCountInString(s[:byteIndex]) => 1
+//	text.Splice(runeIndex, 1, "🧟") => "🙃🧟"
+//
+// Although it is possible to represent invalid utf8 in a go string, automerge will error if you
+// try to write invalid utf8 into a document.
+//
+// If you are new to unicode it's worth pointing out that the number of codepoints does not
+// necessarily correspond to the number of rendered glyphs (for example Text("👍🏼").Len() == 2).
+// For more information consult the Unicode Consortium's [FAQ].
+//
+// [FAQ]: https://www.unicode.org/faq/char_combmark.html
+// [rune]: https://pkg.go.dev/builtin#rune
 type Text struct {
 	doc   *Doc
 	objID *objID
@@ -24,8 +47,9 @@ func NewText(s string) *Text {
 	return &Text{val: s}
 }
 
-// Len returns the length of the text
-// TODO: what units?
+// Len returns number of unicode codepoints in the text, this
+// may be less than the number of utf-8 bytes.
+// For example Text("😀😀").Len() == 2, while len("😀😀") == 8.
 func (t *Text) Len() int {
 	if t.doc == nil {
 		return 0
@@ -74,8 +98,8 @@ func (t *Text) Get() (string, error) {
 }
 
 // Set overwrites the entire string with a new value,
-// prefer to use Insert/Del/Append/Splice as appropriate
-// to make collaborative editing easier.
+// prefer to use Insert/Delete/Append/Splice as appropriate
+// to preserves collaborators changes.
 func (t *Text) Set(s string) error {
 	return t.splice(0, C.SIZE_MAX, s)
 }
@@ -85,7 +109,7 @@ func (t *Text) Insert(pos int, s string) error {
 	return t.splice(C.size_t(pos), 0, s)
 }
 
-// Delete deletes del characters from position pos
+// Delete deletes del runes from position pos
 func (t *Text) Delete(pos int, del int) error {
 	return t.splice(C.size_t(pos), C.size_t(del), "")
 }
@@ -95,7 +119,7 @@ func (t *Text) Append(s string) error {
 	return t.splice(C.SIZE_MAX, 0, s)
 }
 
-// Splice deletes del characters at position pos, and inserts
+// Splice deletes del runes at position pos, and inserts
 // substr s in their place.
 func (t *Text) Splice(pos int, del int, s string) error {
 	return t.splice(C.size_t(pos), C.size_t(del), s)
