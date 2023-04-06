@@ -2,6 +2,12 @@ package automerge
 
 /*
 #include "automerge.h"
+
+#cgo LDFLAGS: -L${SRCDIR}/deps
+#cgo darwin,arm64 LDFLAGS: -lautomerge_core_darwin_arm64
+#cgo darwin,amd64 LDFLAGS: -lautomerge_core_darwin_amd64
+#cgo linux,arm64 LDFLAGS: -lautomerge_core_linux_arm64 -lm
+#cgo linux,amd64 LDFLAGS: -lautomerge_core_linux_amd64 -lm
 */
 import "C"
 import (
