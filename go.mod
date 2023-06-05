@@ -3,7 +3,7 @@ module github.com/automerge/automerge-go
 go 1.19
 
 require (
-	github.com/stretchr/testify v1.8.3
+	github.com/stretchr/testify v1.8.4
 	honnef.co/go/tools v0.4.3
 )
 
