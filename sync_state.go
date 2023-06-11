@@ -40,10 +40,10 @@ func LoadSyncState(d *Doc, raw []byte) (*SyncState, error) {
 
 // ReceiveMessage should be called with every message created by GenerateMessage
 // on the peer side.
-func (ss *SyncState) ReceiveMessage(msg []byte) error {
+func (ss *SyncState) ReceiveMessage(msg []byte) (*SyncMessage, error) {
 	sm, err := loadSyncMessage(msg)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	defer runtime.KeepAlive(ss)
@@ -51,45 +51,42 @@ func (ss *SyncState) ReceiveMessage(msg []byte) error {
 	cDoc, unlock := ss.Doc.lock()
 	defer unlock()
 
-	return wrap(C.AMreceiveSyncMessage(cDoc, ss.cSyncState, sm.cSyncMessage)).void()
+	return sm, wrap(C.AMreceiveSyncMessage(cDoc, ss.cSyncState, sm.cSyncMessage)).void()
 }
 
 // GenerateMessage generates the next message to send to the client.
 // If `valid` is false the clients are currently in sync and there are
 // no more messages to send (until you either modify the underlying document)
-func (ss *SyncState) GenerateMessage() (bytes []byte, valid bool) {
+func (ss *SyncState) GenerateMessage() (sm *SyncMessage, valid bool) {
 	defer runtime.KeepAlive(ss)
 	cDoc, unlock := ss.Doc.lock()
 	defer unlock()
 
-	sm := must(wrap(C.AMgenerateSyncMessage(cDoc, ss.cSyncState)).item()).syncMessage()
+	sm = must(wrap(C.AMgenerateSyncMessage(cDoc, ss.cSyncState)).item()).syncMessage()
 
 	if sm == nil {
 		return nil, false
 	}
 
-	return sm.save(), true
+	return sm, true
 }
 
 // Save serializes the sync state so that you can resume it later.
 // This is an optimization to reduce the number of round-trips required
 // to get two peers in sync at a later date.
-func (ss *SyncState) Save() ([]byte, error) {
+func (ss *SyncState) Save() []byte {
 	defer runtime.KeepAlive(ss)
 
-	item, err := wrap(C.AMsyncStateEncode(ss.cSyncState)).item()
-	if err != nil {
-		return nil, err
-	}
-	return item.bytes(), nil
+	return must(wrap(C.AMsyncStateEncode(ss.cSyncState)).item()).bytes()
 }
 
-type syncMessage struct {
+// SyncMessage is sent between peers to keep copies of a document in sync.
+type SyncMessage struct {
 	item         *item
 	cSyncMessage *C.AMsyncMessage
 }
 
-func loadSyncMessage(msg []byte) (*syncMessage, error) {
+func loadSyncMessage(msg []byte) (*SyncMessage, error) {
 	cBytes, free := toByteSpan(msg)
 	defer free()
 
@@ -100,7 +97,26 @@ func loadSyncMessage(msg []byte) (*syncMessage, error) {
 	return item.syncMessage(), nil
 }
 
-func (sm *syncMessage) save() []byte {
+// Changes returns any changes included in this SyncMessage
+func (sm *SyncMessage) Changes() []*Change {
+	defer runtime.KeepAlive(sm)
+
+	items := must(wrap(C.AMsyncMessageChanges(sm.cSyncMessage)).items())
+
+	return mapItems(items, func(i *item) *Change { return i.change() })
+}
+
+// Heads gives the heads of the peer that generated the SyncMessage
+func (sm *SyncMessage) Heads() []ChangeHash {
+	defer runtime.KeepAlive(sm)
+
+	items := must(wrap(C.AMsyncMessageHeads(sm.cSyncMessage)).items())
+
+	return mapItems(items, func(i *item) ChangeHash { return i.changeHash() })
+}
+
+// Bytes returns a representation for sending over the network.
+func (sm *SyncMessage) Bytes() []byte {
 	if sm == nil {
 		return nil
 	}

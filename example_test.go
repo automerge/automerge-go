@@ -52,7 +52,7 @@ loop:
 	for {
 		msg, valid := syncState.GenerateMessage()
 		if valid {
-			send <- msg
+			send <- msg.Bytes()
 		}
 
 		select {
@@ -61,7 +61,7 @@ loop:
 				break loop
 			}
 
-			err := syncState.ReceiveMessage(msg)
+			_, err := syncState.ReceiveMessage(msg)
 			if err != nil {
 				panic(err)
 			}

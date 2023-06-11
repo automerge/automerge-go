@@ -680,7 +680,7 @@ func TestSyncState(t *testing.T) {
 
 	resync := func() {
 		var valid1, valid2 bool
-		var m []byte
+		var m *automerge.SyncMessage
 		var err error
 
 		for {
@@ -689,15 +689,16 @@ func TestSyncState(t *testing.T) {
 			if !valid1 {
 				break
 			}
-			require.NoError(t, sState.ReceiveMessage(m))
+			_, err = sState.ReceiveMessage(m.Bytes())
+			require.NoError(t, err)
 
 			m, valid2 = sState.GenerateMessage()
 			require.NoError(t, err)
 			if !valid2 {
 				break
 			}
-
-			require.NoError(t, cState.ReceiveMessage(m))
+			_, err = cState.ReceiveMessage(m.Bytes())
+			require.NoError(t, err)
 		}
 	}
 
@@ -721,10 +722,8 @@ func TestSyncState(t *testing.T) {
 	require.Equal(t, cV, sV)
 	require.Equal(t, map[string]int{"s": 15, "c": 15}, cV)
 
-	cBytes, err := cState.Save()
-	require.NoError(t, err)
-	sBytes, err := sState.Save()
-	require.NoError(t, err)
+	cBytes := cState.Save()
+	sBytes := sState.Save()
 	cState, err = automerge.LoadSyncState(cDoc, cBytes)
 	require.NoError(t, err)
 	sState, err = automerge.LoadSyncState(sDoc, sBytes)
