@@ -215,7 +215,7 @@ func TestMap(t *testing.T) {
 
 	require.Equal(t, "&automerge.Map{\"string\": \"hello\"}", n.GoString())
 
-	require.NoError(t, m.Del("map"))
+	require.NoError(t, m.Delete("map"))
 	v, err := m.Get("map")
 	require.NoError(t, err)
 	require.True(t, v.IsVoid())
