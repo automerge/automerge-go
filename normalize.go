@@ -3,7 +3,13 @@ package automerge
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"time"
+)
+
+var (
+	boolType   = reflect.TypeOf(true)
+	stringType = reflect.TypeOf("")
 )
 
 // normalize converts the value into a type expected by Put()
@@ -13,23 +19,26 @@ func normalize(value any) (any, error) {
 		return nil, nil
 	}
 
-	switch v := value.(type) {
+	switch value.(type) {
 	case bool, string, []byte, int64, uint64, float64,
 		time.Time, map[string]any, []any,
-		*Counter, *Text, *Map, *List:
+		*Counter, *Text, *Map, *List, *Value:
 		return value, nil
-	case int:
-		return float64(v), nil
-	case int16:
-		return float64(v), nil
-	case int32:
-		return float64(v), nil
-	case uint:
-		return float64(v), nil
-	case uint16:
-		return float64(v), nil
-	case uint32:
-		return float64(v), nil
+	}
+
+	rv := reflect.ValueOf(value)
+
+	switch {
+	case rv.CanFloat():
+		return rv.Float(), nil
+	case rv.CanInt():
+		return float64(rv.Int()), nil
+	case rv.CanUint():
+		return rv.Uint(), nil
+	case rv.CanConvert(boolType):
+		return rv.Bool(), nil
+	case rv.CanConvert(stringType):
+		return rv.String(), nil
 	}
 
 	// TODO: this is a quite expensive approach...

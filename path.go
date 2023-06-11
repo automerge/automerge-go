@@ -8,16 +8,23 @@ type Path struct {
 	path []any
 }
 
+type deleteIndicator int
+
+var toDelete = deleteIndicator(0)
+
 // Path extends the cursor with more path segments.
 // It panics if any path segment is not a string or an int.
 // It does not check that the path segment is traversable until you call
 // a method that accesses the document.
 func (p *Path) Path(path ...any) *Path {
-	for _, v := range path {
-		if _, ok := v.(string); !ok {
-			if _, ok := v.(int); !ok {
-				panic(fmt.Errorf("automerge: invalid path segment, expected string or int, got: %T(%#v)", v, v))
-			}
+	for i, v := range path {
+		rv := reflect.ValueOf(v)
+		if rv.CanInt() {
+			path[i] = int(rv.Int())
+		} else if rv.CanConvert(reflect.TypeOf("")) {
+			path[i] = rv.String()
+		} else {
+			panic(fmt.Errorf("automerge: invalid path segment, expected string or int, got: %T(%#v)", v, v))
 		}
 	}
 	return &Path{d: p.d, path: append(p.path, path...)}
