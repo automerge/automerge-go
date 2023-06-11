@@ -171,18 +171,22 @@ func (v *Value) assertKind(k Kind) {
 	}
 }
 
-func (v *Value) goValue() any {
+// Interface returns the value as a go interface.
+// It recursively converts automerge.Map to map[string]any,
+// automerge.List to []any, automerge.Text to string, and
+// automerge.Counter to int64.
+func (v *Value) Interface() any {
 	switch v.kind {
 	case KindMap:
 		values, err := v.Map().Values()
 		// this should not be able to happen because .load() is only
-		// called from Value.goValue() which checks that this is a map.
+		// called from Value.Interface() which checks that this is a map.
 		if err != nil {
 			panic(err)
 		}
 		out := map[string]any{}
 		for k, v := range values {
-			out[k] = v.goValue()
+			out[k] = v.Interface()
 		}
 		return out
 	case KindList:
@@ -193,7 +197,7 @@ func (v *Value) goValue() any {
 		}
 		out := []any{}
 		for _, v := range values {
-			out = append(out, v.goValue())
+			out = append(out, v.Interface())
 		}
 		return out
 	case KindText:

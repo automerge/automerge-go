@@ -100,7 +100,7 @@ func As[T any](v *Value, errs ...error) (ret T, err error) {
 
 	default:
 		var val any
-		val = v.goValue()
+		val = v.Interface()
 		if r, ok := val.(T); ok {
 			return r, nil
 		}
