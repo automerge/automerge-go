@@ -11,7 +11,7 @@ import (
 // a doc and a peer; and lets you optimize bandwidth used to ensure
 // two docs are always in sync.
 type SyncState struct {
-	doc  *Doc
+	Doc  *Doc
 	item *item
 
 	cSyncState *C.AMsyncState
@@ -20,7 +20,7 @@ type SyncState struct {
 // NewSyncState returns a new sync state to sync with a peer
 func NewSyncState(d *Doc) *SyncState {
 	ss := must(wrap(C.AMsyncStateInit()).item()).syncState()
-	ss.doc = d
+	ss.Doc = d
 	return ss
 }
 
@@ -34,7 +34,7 @@ func LoadSyncState(d *Doc, raw []byte) (*SyncState, error) {
 		return nil, err
 	}
 	ss := item.syncState()
-	ss.doc = d
+	ss.Doc = d
 	return ss, nil
 }
 
@@ -48,7 +48,7 @@ func (ss *SyncState) ReceiveMessage(msg []byte) error {
 
 	defer runtime.KeepAlive(ss)
 	defer runtime.KeepAlive(sm)
-	cDoc, unlock := ss.doc.lock()
+	cDoc, unlock := ss.Doc.lock()
 	defer unlock()
 
 	return wrap(C.AMreceiveSyncMessage(cDoc, ss.cSyncState, sm.cSyncMessage)).void()
@@ -59,7 +59,7 @@ func (ss *SyncState) ReceiveMessage(msg []byte) error {
 // no more messages to send (until you either modify the underlying document)
 func (ss *SyncState) GenerateMessage() (bytes []byte, valid bool) {
 	defer runtime.KeepAlive(ss)
-	cDoc, unlock := ss.doc.lock()
+	cDoc, unlock := ss.Doc.lock()
 	defer unlock()
 
 	sm := must(wrap(C.AMgenerateSyncMessage(cDoc, ss.cSyncState)).item()).syncMessage()
