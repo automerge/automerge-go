@@ -24,7 +24,7 @@ func ExampleAs() {
 	fmt.Println("foo-bar:", v)
 
 	type S struct {
-		IsValid bool `json:"isValid"`
+		IsValid bool `automerge:"isValid"`
 	}
 	s, err := automerge.As[*S](doc.Root())
 	if err != nil {
