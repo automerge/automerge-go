@@ -76,7 +76,7 @@ func (d *Doc) Save() []byte {
 
 // RootMap returns the root of the document as a Map
 func (d *Doc) RootMap() *Map {
-	return &Map{doc: d, objID: &objID{cObjID: (*C.AMobjId)(C.AM_ROOT)}}
+	return &Map{doc: d, objID: rootObjID}
 }
 
 // Root returns the root of the document as a Value

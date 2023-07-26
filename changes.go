@@ -1,4 +1,4 @@
-package automerge
+ackage automerge
 
 // #include "automerge.h"
 import "C"

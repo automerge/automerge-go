@@ -21,7 +21,7 @@ func NewCounter(v int64) *Counter {
 	return &Counter{val: v}
 }
 
-// Get returns the current value of the counter.
+// Get retrurns the current value of the counter.
 func (c *Counter) Get() (int64, error) {
 	var v *Value
 	var err error

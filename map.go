@@ -116,7 +116,7 @@ func (m *Map) Set(key string, value any) error {
 		return err
 	}
 
-	value, err := normalize(value)
+	value, err := normalize(value, false)
 	if err != nil {
 		return err
 	}
@@ -228,6 +228,19 @@ func (m *Map) Set(key string, value any) error {
 		if err = v.Set(v.val); err != nil {
 			return err
 		}
+
+	case IsStruct:
+		s := v.isStruct()
+		if s.objID != nil {
+			return fmt.Errorf("automerge.List: tried to move an attached automerge.Struct")
+		}
+		item, err := wrap(C.AMmapPutObject(cDoc, cObj, cKey, C.AM_OBJ_TYPE_MAP)).item()
+		if err != nil {
+			return err
+		}
+		s.doc = m.doc
+		s.objID = item.objID()
+		s.write(v)
 
 	default:
 		err = fmt.Errorf("automerge.Map: tried to write unsupported value %#v", value)

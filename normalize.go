@@ -14,9 +14,12 @@ var (
 
 // normalize converts the value into a type expected by Put()
 // bool/string/[]byte/int64/uint64/float64/time.Time/[]any/map[string]any/*Text/*Counter
-func normalize(value any) (any, error) {
+func normalize(value any, isStruct bool) (any, error) {
 	if value == nil {
 		return nil, nil
+	}
+	if _, ok := value.(IsStruct); ok && !isStruct {
+		return value, nil
 	}
 
 	rv := reflect.ValueOf(value)
@@ -36,7 +39,7 @@ func normalize(value any) (any, error) {
 	case reflect.String:
 		return rv.String(), nil
 	case reflect.Interface:
-		return normalize(rv.Elem().Interface())
+		return normalize(rv.Elem().Interface(), false)
 
 	case reflect.Pointer:
 		switch reflect.TypeOf(value) {
@@ -49,7 +52,7 @@ func normalize(value any) (any, error) {
 		case reflect.TypeOf(&Counter{}):
 			return value.(*Counter), nil
 		}
-		return normalize(rv.Elem().Interface())
+		return normalize(rv.Elem().Interface(), false)
 
 	case reflect.Slice, reflect.Array:
 		if rv.Type().Elem().Kind() == reflect.Uint8 {
@@ -63,7 +66,7 @@ func normalize(value any) (any, error) {
 		ret := []any{}
 
 		for i := 0; i < rv.Len(); i++ {
-			v, err := normalize(rv.Index(i).Interface())
+			v, err := normalize(rv.Index(i).Interface(), false)
 			if err != nil {
 				return nil, err
 			}
@@ -79,7 +82,7 @@ func normalize(value any) (any, error) {
 		}
 
 		for _, k := range rv.MapKeys() {
-			v, err := normalize(rv.MapIndex(k).Interface())
+			v, err := normalize(rv.MapIndex(k).Interface(), false)
 			if err != nil {
 				return nil, err
 			}
@@ -103,7 +106,7 @@ func normalize(value any) (any, error) {
 				continue
 			}
 
-			v, err := normalize(rv.Field(i).Interface())
+			v, err := normalize(rv.Field(i).Interface(), false)
 			if err != nil {
 				return nil, err
 			}

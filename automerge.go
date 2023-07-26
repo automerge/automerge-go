@@ -23,7 +23,7 @@ And four mutable automerge types:
   - [Text] – a mutable string
   - [Counter] – an int64 that is incremented (instead of overwritten) by collaborators
 
-If you read part of the doc that has no value set, automerge-go will return a
+# If you read part of the doc that has no value set, automerge-go will return a
 Value with Kind() == KindVoid. You cannot create such a Value directly or write
 one to the document.
 

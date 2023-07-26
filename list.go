@@ -169,7 +169,7 @@ func (l *List) put(i C.size_t, before bool, value any) error {
 		l.path = nil
 	}
 
-	value, err := normalize(value)
+	value, err := normalize(value, false)
 	if err != nil {
 		return err
 	}
@@ -273,6 +273,19 @@ func (l *List) put(i C.size_t, before bool, value any) error {
 		}
 		v.doc = l.doc
 		v.objID = item.objID()
+
+	case IsStruct:
+		s := v.isStruct()
+		if s.objID != nil {
+			return fmt.Errorf("automerge.List: tried to move an attached *automerge.Map")
+		}
+		item, err := wrap(C.AMlistPutObject(cDoc, cObj, i, C.bool(before), C.AM_OBJ_TYPE_MAP)).item()
+		if err != nil {
+			return err
+		}
+		s.doc = l.doc
+		s.objID = item.objID()
+		s.write(v)
 
 	default:
 		err = fmt.Errorf("automerge.List: tried to write unsupported value %#v", value)

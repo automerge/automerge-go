@@ -270,6 +270,8 @@ type objID struct {
 	cObjID *C.AMobjId
 }
 
+var rootObjID = &objID{cObjID: (*C.AMobjId)(C.AM_ROOT)}
+
 func (o *objID) objKind(d *Doc) Kind {
 	// not using d.Lock() here because the doc
 	// is likely already locked by List.Get()/Map.Get()
