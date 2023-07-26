@@ -101,7 +101,7 @@ func (t *Text) Get() (string, error) {
 // prefer to use Insert/Delete/Append/Splice as appropriate
 // to preserves collaborators changes.
 func (t *Text) Set(s string) error {
-	return t.splice(0, C.SIZE_MAX>>1, s)
+	return t.splice(0, C.PTRDIFF_MAX, s)
 }
 
 // Insert adds a substr at position pos in the Text
