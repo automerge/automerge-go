@@ -101,7 +101,7 @@ func (t *Text) Get() (string, error) {
 // prefer to use Insert/Delete/Append/Splice as appropriate
 // to preserves collaborators changes.
 func (t *Text) Set(s string) error {
-	return t.splice(0, C.SIZE_MAX, s)
+	return t.splice(0, C.SIZE_MAX>>1, s)
 }
 
 // Insert adds a substr at position pos in the Text
@@ -111,7 +111,7 @@ func (t *Text) Insert(pos int, s string) error {
 
 // Delete deletes del runes from position pos
 func (t *Text) Delete(pos int, del int) error {
-	return t.splice(C.size_t(pos), C.size_t(del), "")
+	return t.splice(C.size_t(pos), C.ptrdiff_t(del), "")
 }
 
 // Append adds substr s at the end of the string
@@ -122,10 +122,10 @@ func (t *Text) Append(s string) error {
 // Splice deletes del runes at position pos, and inserts
 // substr s in their place.
 func (t *Text) Splice(pos int, del int, s string) error {
-	return t.splice(C.size_t(pos), C.size_t(del), s)
+	return t.splice(C.size_t(pos), C.ptrdiff_t(del), s)
 }
 
-func (t *Text) splice(pos, del C.size_t, s string) error {
+func (t *Text) splice(pos C.size_t, del C.ptrdiff_t, s string) error {
 	if t.doc == nil {
 		return fmt.Errorf("automerge.Text: tried to write to detached text")
 	}
