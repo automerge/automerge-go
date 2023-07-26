@@ -59,9 +59,39 @@ typedef uint8_t AMidxType;
 
 /**
  * \ingroup enumerations
+ * \enum AMmarkExpand
+ * \installed_headerfile
+ * \brief A mark's expansion mode for when bordering text is inserted.
+ */
+enum AMmarkExpand {
+  /**
+   * Include text inserted at the end offset.
+   */
+  AM_MARK_EXPAND_AFTER = 3,
+  /**
+   * Include text inserted at the start offset.
+   */
+  AM_MARK_EXPAND_BEFORE = 2,
+  /**
+   * Include text inserted at either offset.
+   */
+  AM_MARK_EXPAND_BOTH = 4,
+  /**
+   * The default tag, not a mark expansion mode signifier.
+   */
+  AM_MARK_EXPAND_DEFAULT = 0,
+  /**
+   * Exclude text inserted at either offset.
+   */
+  AM_MARK_EXPAND_NONE = 1,
+};
+typedef uint8_t AMmarkExpand;
+
+/**
+ * \ingroup enumerations
  * \enum AMobjType
  * \installed_headerfile
- * \brief The type of an object value.
+ * \brief The type of an object.
  */
 enum AMobjType {
   /**
@@ -154,41 +184,45 @@ enum AMvalType {
    */
   AM_VAL_TYPE_INT = (1 << 9),
   /**
+   * A mark.
+   */
+  AM_VAL_TYPE_MARK = (1 << 10),
+  /**
    * A null value.
    */
-  AM_VAL_TYPE_NULL = (1 << 10),
+  AM_VAL_TYPE_NULL = (1 << 11),
   /**
    * An object type value.
    */
-  AM_VAL_TYPE_OBJ_TYPE = (1 << 11),
+  AM_VAL_TYPE_OBJ_TYPE = (1 << 12),
   /**
    * A UTF-8 string view value.
    */
-  AM_VAL_TYPE_STR = (1 << 12),
+  AM_VAL_TYPE_STR = (1 << 13),
   /**
    * A synchronization have value.
    */
-  AM_VAL_TYPE_SYNC_HAVE = (1 << 13),
+  AM_VAL_TYPE_SYNC_HAVE = (1 << 14),
   /**
    * A synchronization message value.
    */
-  AM_VAL_TYPE_SYNC_MESSAGE = (1 << 14),
+  AM_VAL_TYPE_SYNC_MESSAGE = (1 << 15),
   /**
    * A synchronization state value.
    */
-  AM_VAL_TYPE_SYNC_STATE = (1 << 15),
+  AM_VAL_TYPE_SYNC_STATE = (1 << 16),
   /**
    * A *nix timestamp (milliseconds) value.
    */
-  AM_VAL_TYPE_TIMESTAMP = (1 << 16),
+  AM_VAL_TYPE_TIMESTAMP = (1 << 17),
   /**
    * A 64-bit unsigned integer value.
    */
-  AM_VAL_TYPE_UINT = (1 << 17),
+  AM_VAL_TYPE_UINT = (1 << 18),
   /**
    * An unknown type of value.
    */
-  AM_VAL_TYPE_UNKNOWN = (1 << 18),
+  AM_VAL_TYPE_UNKNOWN = (1 << 19),
   /**
    * A void.
    */
@@ -223,6 +257,8 @@ typedef struct AMdoc AMdoc;
  * \brief An item within a result.
  */
 typedef struct AMitem AMitem;
+
+typedef struct AMmark AMmark;
 
 /**
  * \struct AMobjId
@@ -391,7 +427,7 @@ struct AMresult *AMactorIdFromBytes(const uint8_t *src, size_t count);
  * \internal
  *
  * # Safety
- * hex_str must be a valid pointer to an AMbyteSpan
+ * value.src must be a byte array of length >= value.count
  */
 struct AMresult *AMactorIdFromStr(struct AMbyteSpan value);
 
@@ -608,8 +644,9 @@ uint64_t AMchangeMaxOp(const struct AMchange *change);
  * \brief Gets the message of a change.
  *
  * \param[in] change A pointer to an `AMchange` struct.
- * \return An `AMbyteSpan` struct for a UTF-8 string.
+ * \return A UTF-8 string view as an `AMbyteSpan` struct.
  * \pre \p change `!= NULL`
+ * \post `(`\p change `== NULL) -> (AMbyteSpan){NULL, 0}`
  * \internal
  *
  * # Safety
@@ -1069,13 +1106,15 @@ struct AMresult *AMmerge(struct AMdoc *dest, struct AMdoc *src);
 /**
  * \memberof AMdoc
  * \brief Gets the current or historical size of an object.
- *
  * \param[in] doc A pointer to an `AMdoc` struct.
  * \param[in] obj_id A pointer to an `AMobjId` struct or `AM_ROOT`.
  * \param[in] heads A pointer to an `AMitems` struct with `AM_VAL_TYPE_CHANGE_HASH`
  *                  items to select a historical size or `NULL` to select its
  *                  current size.
  * \return The count of items in the object identified by \p obj_id.
+ *         For an `AM_OBJ_TYPE_TEXT` object, if `AUTOMERGE_C_UTF8` is defined
+ *         then the items are bytes but if `AUTOMERGE_C_UTF32` is defined then
+ *         the items are Unicode code points.
  * \pre \p doc `!= NULL`
  * \internal
  *
@@ -1237,8 +1276,9 @@ struct AMresult *AMsetActorId(struct AMdoc *doc, const struct AMactorId *actor_i
  * \param[in] obj_id A pointer to an `AMobjId` struct or `AM_ROOT`.
  * \param[in] pos A position in the object identified by \p obj_id or
  *                `SIZE_MAX` to indicate one past its end.
- * \param[in] del The number of values to delete or `SIZE_MAX` to indicate
- *                all of them.
+ * \param[in] del The number of values to delete. If \p del `> 0` then
+ *                deletion begins at \p pos but if \p del `< 0` then deletion
+ *                ends at \p pos.
  * \param[in] values A copy of an `AMitems` struct from which values will be
  *                   spliced <b>starting at its current position</b>; call
  *                   `AMitemsRewound()` on a used `AMitems` first to ensure
@@ -1247,7 +1287,7 @@ struct AMresult *AMsetActorId(struct AMdoc *doc, const struct AMactorId *actor_i
  * \return A pointer to an `AMresult` struct with an `AM_VAL_TYPE_VOID` item.
  * \pre \p doc `!= NULL`
  * \pre `0 <=` \p pos `<= AMobjSize(`\p obj_id `)` or \p pos `== SIZE_MAX`
- * \pre `0 <=` \p del `<= AMobjSize(`\p obj_id `)` or \p del `== SIZE_MAX`
+ * \pre `-AMobjSize(`\p obj_id `) <=` \p del `<= AMobjSize(`\p obj_id `)`
  * \warning The returned `AMresult` struct pointer must be passed to
  *          `AMresultFree()` in order to avoid a memory leak.
  * \internal
@@ -1257,24 +1297,30 @@ struct AMresult *AMsetActorId(struct AMdoc *doc, const struct AMactorId *actor_i
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
  * values must be a valid pointer to an AMitems or std::ptr::null()
  */
-struct AMresult *AMsplice(struct AMdoc *doc, const struct AMobjId *obj_id, size_t pos, size_t del, struct AMitems values);
+struct AMresult *AMsplice(struct AMdoc *doc, const struct AMobjId *obj_id, size_t pos, ptrdiff_t del, struct AMitems values);
 
 /**
  * \memberof AMdoc
  * \brief Splices characters into and/or removes characters from the
  *        identified object at a given position within it.
- *
  * \param[in] doc A pointer to an `AMdoc` struct.
  * \param[in] obj_id A pointer to an `AMobjId` struct or `AM_ROOT`.
  * \param[in] pos A position in the text object identified by \p obj_id or
  *                `SIZE_MAX` to indicate one past its end.
- * \param[in] del The number of characters to delete or `SIZE_MAX` to indicate
- *                all of them.
+ *                If `AUTOMERGE_C_UTF8` is defined then \p pos is in units of
+ *                bytes but if `AUTOMERGE_C_UTF32` is defined then \p pos is in
+ *                units of Unicode code points.
+ * \param[in] del The number of characters to delete. If \p del `> 0` then
+ *                deletion begins at \p pos but if \p del `< 0` then deletion
+ *                ends at \p pos.
+ *                If `AUTOMERGE_C_UTF8` is defined then \p del is in units of
+ *                bytes but if `AUTOMERGE_C_UTF32` is defined then \p del is in
+ *                units of Unicode code points.
  * \param[in] text A UTF-8 string view as an `AMbyteSpan` struct.
  * \return A pointer to an `AMresult` struct with an `AM_VAL_TYPE_VOID` item.
  * \pre \p doc `!= NULL`
  * \pre `0 <=` \p pos `<= AMobjSize(`\p obj_id `)` or \p pos `== SIZE_MAX`
- * \pre `0 <=` \p del `<= AMobjSize(`\p obj_id `)` or \p del `== SIZE_MAX`
+ * \pre `-AMobjSize(`\p obj_id `) <=` \p del `<= AMobjSize(`\p obj_id `)`
  * \warning The returned `AMresult` struct pointer must be passed to
  *          `AMresultFree()` in order to avoid a memory leak.
  * \internal
@@ -1283,7 +1329,7 @@ struct AMresult *AMsplice(struct AMdoc *doc, const struct AMobjId *obj_id, size_
  * doc must be a valid pointer to an AMdoc
  * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
  */
-struct AMresult *AMspliceText(struct AMdoc *doc, const struct AMobjId *obj_id, size_t pos, size_t del, struct AMbyteSpan text);
+struct AMresult *AMspliceText(struct AMdoc *doc, const struct AMobjId *obj_id, size_t pos, ptrdiff_t del, struct AMbyteSpan text);
 
 /**
  * \memberof AMdoc
@@ -2070,6 +2116,156 @@ struct AMresult *AMmapRange(const struct AMdoc *doc,
                             const struct AMitems *heads);
 
 /**
+ * \memberof AMmark
+ * \brief Gets the name of a mark.
+ *
+ * \param[in] mark A pointer to an `AMmark` struct.
+ * \return A UTF-8 string view as an `AMbyteSpan` struct.
+ * \pre \p mark `!= NULL`
+ * \post `(`\p mark `== NULL) -> (AMbyteSpan){NULL, 0}`
+ * \internal
+ *
+ * # Safety
+ * mark must be a valid pointer to an AMmark
+ */
+struct AMbyteSpan AMmarkName(const struct AMmark *mark);
+
+/**
+ * \memberof AMmark
+ * \brief Gets the value of a mark.
+ *
+ * \param[in] mark A pointer to an `AMmark` struct.
+ * \return A pointer to an `AMresult` struct with an `AMitem` struct.
+ * \pre \p mark `!= NULL`
+ * \warning The returned `AMresult` struct pointer must be passed to
+ *          `AMresultFree()` in order to avoid a memory leak.
+ * \internal
+ *
+ * # Safety
+ * mark must be a valid pointer to an AMmark
+ */
+struct AMresult *AMmarkValue(const struct AMmark *mark);
+
+/**
+ * \memberof AMmark
+ * \brief Gets the start offset of a mark.
+ *
+ * \param[in] mark A pointer to an `AMmark` struct.
+ * \return The offset at which the mark starts.
+ * \pre \p mark `!= NULL`
+ * \post `(`\p mark `== NULL) -> 0`
+ * \internal
+ *
+ * # Safety
+ * mark must be a valid pointer to an AMmark
+ */
+size_t AMmarkStart(const struct AMmark *mark);
+
+/**
+ * \memberof AMmark
+ * \brief Gets the end offset of a mark.
+ *
+ * \param[in] mark A pointer to an `AMmark` struct.
+ * \return The offset at which the mark ends.
+ * \pre \p mark `!= NULL`
+ * \post `(`\p mark `== NULL) -> SIZE_MAX`
+ * \internal
+ *
+ * # Safety
+ * mark must be a valid pointer to an AMmark
+ */
+size_t AMmarkEnd(const struct AMmark *mark);
+
+/**
+ * \memberof AMdoc
+ * \brief Gets the marks associated with an object.
+ *
+ * \param[in] doc A pointer to an `AMdoc` struct.
+ * \param[in] obj_id A pointer to an `AMobjId` struct or `AM_ROOT`.
+ * \param[in] heads A pointer to an `AMitems` struct with `AM_VAL_TYPE_CHANGE_HASH`
+ *                  items or `NULL`.
+ * \return A pointer to an `AMresult` struct with `AM_VAL_TYPE_MARK` items.
+ * \pre \p doc `!= NULL`
+ * \warning The returned `AMresult` struct pointer must be passed to
+ *          `AMresultFree()` in order to avoid a memory leak.
+ * \internal
+ *
+ * # Safety
+ * doc must be a valid pointer to an AMdoc
+ * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
+ * heads must be a valid pointer to an AMitems or std::ptr::null()
+ */
+struct AMresult *AMmarks(const struct AMdoc *doc, const struct AMobjId *obj_id, const struct AMitems *heads);
+
+/**
+ * \memberof AMdoc
+ * \brief Creates a mark.
+ *
+ * \param[in] doc A pointer to an `AMdoc` struct.
+ * \param[in] obj_id A pointer to an `AMobjId` struct or `AM_ROOT`.
+ * \param[in] start The start offset of the mark.
+ * \param[in] end The end offset of the mark.
+ * \param[in] expand The mode of expanding the mark to include text inserted at
+ *                   one of its offsets.
+ * \param[in] name A UTF-8 string view as an `AMbyteSpan`struct.
+ * \param[in] value A pointer to an `AMitem` struct with an `AM_VAL_TYPE_MARK`.
+ * \return A pointer to an `AMresult` struct with an `AM_VAL_TYPE_VOID` item.
+ * \pre \p doc `!= NULL`
+ * \pre \p start `<` \p end
+ * \pre \p name.src `!= NULL`
+ * \pre \p name.count `<= sizeof(`\p name.src `)`
+ * \pre \p value `!= NULL`
+ * \warning The returned `AMresult` struct pointer must be passed to
+ *          `AMresultFree()` in order to avoid a memory leak.
+ * \internal
+ *
+ * # Safety
+ * doc must be a valid pointer to an AMdoc
+ * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
+ * name.src must be a byte array of length >= name.count
+ * value must be a valid pointer to an AMitem
+ */
+struct AMresult *AMmarkCreate(struct AMdoc *doc,
+                              const struct AMobjId *obj_id,
+                              size_t start,
+                              size_t end,
+                              AMmarkExpand expand,
+                              struct AMbyteSpan name,
+                              const struct AMitem *value);
+
+/**
+ * \memberof AMdoc
+ * \brief Clears a mark.
+ *
+ * \param[in] doc A pointer to an `AMdoc` struct.
+ * \param[in] obj_id A pointer to an `AMobjId` struct or `AM_ROOT`.
+ * \param[in] start The start offset of the mark.
+ * \param[in] end The end offset of the mark.
+ * \param[in] expand The mode of expanding the mark to include text inserted at
+ *                   one of its offsets.
+ * \param[in] name A UTF-8 string view s an `AMbyteSpan` struct.
+ * \return A pointer to an `AMresult` struct with an `AM_VAL_TYPE_VOID` item.
+ * \pre \p doc `!= NULL`
+ * \pre \p start `<` \p end
+ * \pre \p name.src `!= NULL`
+ * \pre \p name.count `<= sizeof(`\p name.src `)`
+ * \warning The returned `AMresult` struct pointer must be passed to
+ *          `AMresultFree()` in order to avoid a memory leak.
+ * \internal
+ *
+ * # Safety
+ * doc must be a valid pointer to an AMdoc
+ * obj_id must be a valid pointer to an AMobjId or std::ptr::null()
+ * name.src must be a byte array of length >= name.count
+ */
+struct AMresult *AMmarkClear(struct AMdoc *doc,
+                             const struct AMobjId *obj_id,
+                             size_t start,
+                             size_t end,
+                             AMmarkExpand expand,
+                             struct AMbyteSpan name);
+
+/**
  * \memberof AMitem
  * \brief Tests the equality of two items.
  *
@@ -2455,6 +2651,22 @@ bool AMitemToF64(const struct AMitem *item, double *value);
  * item must be a valid pointer to an AMitem
  */
 bool AMitemToInt(const struct AMitem *item, int64_t *value);
+
+/**
+ * \memberof AMitem
+ * \brief Gets the mark value of an item.
+ *
+ * \param[in] item A pointer to an `AMitem` struct.
+ * \param[out] value A pointer to an `AMmark` struct pointer.
+ * \return `true` if `AMitemValType(`\p item `) == AM_VAL_TYPE_MARK` and
+ *         \p *value has been reassigned, `false` otherwise.
+ * \pre \p item `!= NULL`
+ * \internal
+ *
+ * # Safety
+ * item must be a valid pointer to an AMitem
+ */
+bool AMitemToMark(const struct AMitem *item, const struct AMmark **value);
 
 /**
  * \memberof AMitem

@@ -51,6 +51,7 @@ var (
 	kindObjType     Kind = C.AM_VAL_TYPE_OBJ_TYPE
 	kindSyncState   Kind = C.AM_VAL_TYPE_SYNC_STATE
 	kindSyncMessage Kind = C.AM_VAL_TYPE_SYNC_MESSAGE
+	kindMark        Kind = C.AM_VAL_TYPE_MARK
 )
 
 var kindDescriptions = map[Kind]string{
@@ -75,6 +76,7 @@ var kindDescriptions = map[Kind]string{
 	kindObjType:     "kindObjType",
 	kindSyncState:   "kindSyncState",
 	kindSyncMessage: "kindSyncMessage",
+	kindMark:        "KindMark",
 }
 
 // String returns a human-readable representation of the Kind
