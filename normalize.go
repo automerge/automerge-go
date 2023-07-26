@@ -7,11 +7,6 @@ import (
 	"time"
 )
 
-var (
-	boolType   = reflect.TypeOf(true)
-	stringType = reflect.TypeOf("")
-)
-
 // normalize converts the value into a type expected by Put()
 // bool/string/[]byte/int64/uint64/float64/time.Time/[]any/map[string]any/*Text/*Counter
 func normalize(value any) (any, error) {

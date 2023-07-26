@@ -87,7 +87,7 @@ func (m *Map) Len() int {
 	return int(C.AMobjSize(cDoc, cObj, nil))
 }
 
-// Del deletes a key and its corresponding value from the map
+// Delete deletes a key and its corresponding value from the map
 func (m *Map) Delete(key string) error {
 	if m.doc == nil {
 		return fmt.Errorf("automerge.Map: tried to write to detached map")
