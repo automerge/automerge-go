@@ -253,10 +253,10 @@ func (i *item) syncState() *SyncState {
 	return ss
 }
 
-func (i *item) syncMessage() *syncMessage {
+func (i *item) syncMessage() *SyncMessage {
 	defer runtime.KeepAlive(i)
 
-	ss := &syncMessage{item: i}
+	ss := &SyncMessage{item: i}
 	if !C.AMitemToSyncMessage(i.cItem, &ss.cSyncMessage) {
 		if i.Kind() == KindVoid {
 			return nil

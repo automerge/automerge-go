@@ -69,6 +69,23 @@ assume the path is of the type you say it is:
 When you do this, any errors caused by traversing the path will be returned from
 methods called on the returned objects.
 
+# Controling formatting of structs
+
+By default automerge will convert your struct to a map. For each public field in the
+struct (the name starts with an uppercase letter) automerge will add an entry to the
+map with the name of the field and the fields value converted to an automerge value
+recursively.
+
+You can control this behaviour using struct tags:
+
+	struct Example {
+		Renamed bool `automerge:"newname"`
+		Private bool `automerge:"-"`
+	}
+
+If the tag is present and equal to "-" the field will be ignored by automerge,
+otherwise the fields name will be set to the value of the tag.
+
 # Syncing and concurrency
 
 You can access methods on [*Doc] from multiple goroutines and access is mediated

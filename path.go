@@ -1,6 +1,9 @@
 package automerge
 
-import "fmt"
+import (
+	"fmt"
+	"reflect"
+)
 
 // Path is a cursor that lets you reach into the document
 type Path struct {
@@ -8,16 +11,23 @@ type Path struct {
 	path []any
 }
 
+type deleteIndicator int
+
+var toDelete = deleteIndicator(0)
+
 // Path extends the cursor with more path segments.
 // It panics if any path segment is not a string or an int.
 // It does not check that the path segment is traversable until you call
 // a method that accesses the document.
 func (p *Path) Path(path ...any) *Path {
-	for _, v := range path {
-		if _, ok := v.(string); !ok {
-			if _, ok := v.(int); !ok {
-				panic(fmt.Errorf("automerge: invalid path segment, expected string or int, got: %T(%#v)", v, v))
-			}
+	for i, v := range path {
+		rv := reflect.ValueOf(v)
+		if rv.CanInt() {
+			path[i] = int(rv.Int())
+		} else if rv.CanConvert(reflect.TypeOf("")) {
+			path[i] = rv.String()
+		} else {
+			panic(fmt.Errorf("automerge: invalid path segment, expected string or int, got: %T(%#v)", v, v))
 		}
 	}
 	return &Path{d: p.d, path: append(p.path, path...)}
@@ -73,6 +83,11 @@ func (p *Path) Set(v any) error {
 		return err
 	}
 	return nil
+}
+
+// Delete removes the value at this path from the document.
+func (p *Path) Delete() error {
+	return p.Set(toDelete)
 }
 
 func (p *Path) ensureMap(debugKey string) (*Map, error) {
@@ -180,6 +195,9 @@ func (p *Path) ensure() (*Value, func(v any) error, error) {
 		}
 		v, err := m.Get(key)
 		return v, func(v any) error {
+			if v == toDelete {
+				return m.Delete(key)
+			}
 			return m.Set(key, v)
 		}, err
 
@@ -194,8 +212,11 @@ func (p *Path) ensure() (*Value, func(v any) error, error) {
 			return nil, nil, err
 		}
 		return v, func(v any) error {
-			if key > l.Len() {
+			if key > l.Len() || key == l.Len() && v == toDelete {
 				return fmt.Errorf("%#v: tried to write index %v beyond end of list length %v", p, key, l.Len())
+			}
+			if v == toDelete {
+				return l.Delete(key)
 			}
 			if key == l.Len() {
 				return l.Append(v)

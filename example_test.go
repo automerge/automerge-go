@@ -24,7 +24,7 @@ func ExampleAs() {
 	fmt.Println("foo-bar:", v)
 
 	type S struct {
-		IsValid bool `json:"isValid"`
+		IsValid bool `automerge:"isValid"`
 	}
 	s, err := automerge.As[*S](doc.Root())
 	if err != nil {
@@ -52,7 +52,7 @@ loop:
 	for {
 		msg, valid := syncState.GenerateMessage()
 		if valid {
-			send <- msg
+			send <- msg.Bytes()
 		}
 
 		select {
@@ -61,7 +61,7 @@ loop:
 				break loop
 			}
 
-			err := syncState.ReceiveMessage(msg)
+			_, err := syncState.ReceiveMessage(msg)
 			if err != nil {
 				panic(err)
 			}
