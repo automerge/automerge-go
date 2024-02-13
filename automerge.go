@@ -120,25 +120,32 @@ in sync.  This wraps an underlying efficient sync protocol to minimize both
 round-trips and bandwidth used.
 
 	//* process 1 *
-	syncState, err := automerge.NewSyncState(doc)
+	syncState := automerge.NewSyncState(doc)
 	for {
-		m, valid, err := syncState.GenerateMessage()
+		m, valid := syncState.GenerateMessage()
 		if valid {
-			sendCh <- m
+			sendCh <- m.Bytes()
 		}
+
 		msg := <-recvCh
-		err := syncState.ReceiveMessage(msg)
+		_, err := syncState.ReceiveMessage(msg)
+		if err != nil {
+			panic(err)
+		}
 	}
 
 	//* process 2 *
-	syncState, err := automerge.NewSyncState(doc)
+	syncState := automerge.NewSyncState(doc)
 	for {
 		msg := <-sendCh
-		err := syncState.ReceiveMessage(msg)
+		_, err := syncState.ReceiveMessage(msg)
+		if err != nil {
+			panic(err)
+		}
 
-		m, valid, err := syncState.GenerateMessage()
+		m, valid := syncState.GenerateMessage()
 		if valid {
-			recvCh <- m
+			recvCh <- m.Bytes()
 		}
 	}
 
