@@ -41,7 +41,7 @@ func LoadSyncState(d *Doc, raw []byte) (*SyncState, error) {
 // ReceiveMessage should be called with every message created by GenerateMessage
 // on the peer side.
 func (ss *SyncState) ReceiveMessage(msg []byte) (*SyncMessage, error) {
-	sm, err := loadSyncMessage(msg)
+	sm, err := LoadSyncMessage(msg)
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +86,8 @@ type SyncMessage struct {
 	cSyncMessage *C.AMsyncMessage
 }
 
-func loadSyncMessage(msg []byte) (*SyncMessage, error) {
+// LoadSyncMessage decodes a sync message from a byte slice for inspection.
+func LoadSyncMessage(msg []byte) (*SyncMessage, error) {
 	cBytes, free := toByteSpan(msg)
 	defer free()
 
